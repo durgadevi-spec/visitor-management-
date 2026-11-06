@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
 
 type AuthMode = "login" | "signup";
+const REMEMBERED_EMAIL_KEY = "vms_remembered_email";
 
 export default function Login() {
   const [theme, setTheme] = useState<"light" | "dark">(() => {
@@ -16,7 +17,9 @@ export default function Login() {
   });
   const [mode, setMode] = useState<AuthMode>("login");
   const [name, setName] = useState("");
-  const [email, setEmail] = useState("");
+  const [email, setEmail] = useState(() =>
+    typeof window === "undefined" ? "" : window.localStorage.getItem(REMEMBERED_EMAIL_KEY) ?? ""
+  );
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
@@ -35,6 +38,11 @@ export default function Login() {
   const loginMutation = useLogin({
     mutation: {
       onSuccess: (data, variables) => {
+        if (variables.rememberMe) {
+          window.localStorage.setItem(REMEMBERED_EMAIL_KEY, variables.data.email);
+        } else {
+          window.localStorage.removeItem(REMEMBERED_EMAIL_KEY);
+        }
         login(data.token, data.user, variables.rememberMe);
         setLocation("/");
       },
@@ -51,6 +59,11 @@ export default function Login() {
   const signupMutation = useSignup({
     mutation: {
       onSuccess: (data, variables) => {
+        if (variables.rememberMe) {
+          window.localStorage.setItem(REMEMBERED_EMAIL_KEY, variables.data.email);
+        } else {
+          window.localStorage.removeItem(REMEMBERED_EMAIL_KEY);
+        }
         login(data.token, data.user, variables.rememberMe);
         toast({ title: "Account created", description: "You can now access the visitor management system." });
         setLocation("/");
@@ -103,7 +116,7 @@ export default function Login() {
           </p>
         </div>
 
-        <form onSubmit={handleSubmit} className="space-y-5 p-8">
+        <form onSubmit={handleSubmit} autoComplete="on" className="space-y-5 p-8">
           {mode === "signup" && (
             <div className="space-y-2">
               <label htmlFor="signup-name" className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
@@ -128,8 +141,9 @@ export default function Login() {
             </label>
             <Input
               id="auth-email"
+              name={mode === "login" ? "username" : "email"}
               type="email"
-              autoComplete="email"
+              autoComplete={mode === "login" ? "username" : "email"}
               value={email}
               onChange={(event) => setEmail(event.target.value)}
               placeholder="you@company.com"
@@ -145,6 +159,7 @@ export default function Login() {
             <div className="relative">
               <Input
                 id="auth-password"
+                name={mode === "login" ? "password" : "new-password"}
                 type={showPassword ? "text" : "password"}
                 autoComplete={mode === "login" ? "current-password" : "new-password"}
                 value={password}
@@ -200,7 +215,13 @@ export default function Login() {
             <input
               type="checkbox"
               checked={rememberMe}
-              onChange={(event) => setRememberMe(event.target.checked)}
+              onChange={(event) => {
+                const checked = event.target.checked;
+                setRememberMe(checked);
+                if (!checked) {
+                  window.localStorage.removeItem(REMEMBERED_EMAIL_KEY);
+                }
+              }}
               className="h-4 w-4 rounded border-border accent-primary"
             />
             Remember me
