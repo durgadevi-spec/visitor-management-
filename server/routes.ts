@@ -9,11 +9,13 @@ import {
   blacklistTable,
   notificationsTable,
   LoginBody,
+  SignupBody,
   CreateVisitorBody,
   GetVisitorsQueryParams,
   ApproveVisitorBody,
   GetReportsQueryParams,
   CreateUserBody,
+  UpdateUserBody,
   AddToBlacklistBody,
 } from "../shared/schema.ts";
 
@@ -141,6 +143,35 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
   });
 
   /* ----------------------------------- auth ----------------------------------- */
+  app.post(`${api}/auth/signup`, async (req, res): Promise<void> => {
+    const parsed = SignupBody.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: parsed.error.issues[0]?.message ?? "Invalid signup details" });
+      return;
+    }
+
+    const name = parsed.data.name;
+    const email = parsed.data.email.toLowerCase();
+    const existing = await db.select({ id: usersTable.id }).from(usersTable).where(eq(usersTable.email, email));
+    if (existing.length > 0) {
+      res.status(409).json({ error: "An account with this email already exists" });
+      return;
+    }
+
+    const [user] = await db
+      .insert(usersTable)
+      .values({
+        name,
+        email,
+        role: "employee",
+        password: hashPassword(parsed.data.password),
+      })
+      .returning();
+
+    const token = signToken({ userId: user.id, email: user.email, role: user.role });
+    res.status(201).json({ token, user: formatUser(user) });
+  });
+
   app.post(`${api}/auth/login`, async (req, res): Promise<void> => {
     const parsed = LoginBody.safeParse(req.body);
     if (!parsed.success) {
@@ -565,6 +596,53 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
       .returning();
 
     res.status(201).json(formatUser(user));
+  });
+
+  app.put(`${api}/users/:id`, authMiddleware, async (req, res): Promise<void> => {
+    const requester = (req as AuthedRequest).user;
+    const [admin] = await db.select({ role: usersTable.role }).from(usersTable).where(eq(usersTable.id, requester.userId));
+    if (!admin || admin.role !== "admin") {
+      res.status(403).json({ error: "Only administrators can edit employees" });
+      return;
+    }
+
+    const id = Number.parseInt(req.params.id, 10);
+    if (Number.isNaN(id)) {
+      res.status(400).json({ error: "Invalid user ID" });
+      return;
+    }
+
+    const parsed = UpdateUserBody.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: parsed.error.issues[0]?.message ?? "Invalid user details" });
+      return;
+    }
+
+    const [target] = await db.select().from(usersTable).where(eq(usersTable.id, id));
+    if (!target) {
+      res.status(404).json({ error: "User not found" });
+      return;
+    }
+
+    const email = parsed.data.email.toLowerCase();
+    const [emailOwner] = await db.select({ id: usersTable.id }).from(usersTable).where(eq(usersTable.email, email));
+    if (emailOwner && emailOwner.id !== id) {
+      res.status(409).json({ error: "Another user already uses this email address" });
+      return;
+    }
+
+    const [updated] = await db
+      .update(usersTable)
+      .set({
+        name: parsed.data.name,
+        email,
+        role: parsed.data.role,
+        ...(parsed.data.password ? { password: hashPassword(parsed.data.password) } : {}),
+      })
+      .where(eq(usersTable.id, id))
+      .returning();
+
+    res.json(formatUser(updated));
   });
 
   app.delete(`${api}/users/:id`, authMiddleware, async (req, res): Promise<void> => {

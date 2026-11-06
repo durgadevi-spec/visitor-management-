@@ -91,6 +91,12 @@ export const LoginBody = z.object({
   password: z.string(),
 });
 
+export const SignupBody = z.object({
+  name: z.string().trim().min(2, "Name must be at least 2 characters"),
+  email: z.string().trim().email("Enter a valid email address"),
+  password: z.string().min(8, "Password must be at least 8 characters"),
+});
+
 export const CreateVisitorBody = z.object({
   name: z.string(),
   mobile: z.string(),
@@ -133,6 +139,13 @@ export const CreateUserBody = z.object({
   email: z.string(),
   password: z.string(),
   role: z.enum(["admin", "security", "employee"]),
+});
+
+export const UpdateUserBody = z.object({
+  name: z.string().trim().min(2, "Name must be at least 2 characters"),
+  email: z.string().trim().email("Enter a valid email address"),
+  role: z.enum(["admin", "security", "employee"]),
+  password: z.string().min(6, "Password must be at least 6 characters").optional(),
 });
 
 export const AddToBlacklistBody = z.object({

@@ -7,14 +7,14 @@ import { Button } from "@/components/ui/button";
 export function Header() {
   const { data: notifications } = useGetNotifications();
   const [theme, setTheme] = useState<"light" | "dark">(() => {
-    if (typeof window === "undefined") return "dark";
+    if (typeof window === "undefined") return "light";
 
     const storedTheme = window.localStorage.getItem("theme");
     if (storedTheme === "light" || storedTheme === "dark") {
       return storedTheme;
     }
 
-    return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+    return "light";
   });
 
   useEffect(() => {

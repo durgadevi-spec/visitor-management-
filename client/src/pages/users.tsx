@@ -2,6 +2,7 @@ import {
   useGetUsers, 
   getGetUsersQueryKey,
   useCreateUser,
+  useUpdateUser,
   useDeleteUser
 } from "@/lib/api-client";
 import { Card, CardContent } from "@/components/ui/card";
@@ -10,7 +11,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Shield, Trash2, PlusCircle, UserCheck } from "lucide-react";
+import { Shield, Trash2, PlusCircle, UserCheck, Pencil } from "lucide-react";
 import { format } from "date-fns";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useQueryClient } from "@tanstack/react-query";
@@ -21,6 +22,7 @@ import { useForm } from "react-hook-form";
 import { z } from "zod";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useState } from "react";
+import type { User } from "@/lib/api-client";
 import { useAuth } from "@/contexts/AuthContext";
 import { Redirect } from "wouter";
 import { motion, useReducedMotion } from "framer-motion";
@@ -32,9 +34,17 @@ const userSchema = z.object({
   role: z.enum(["admin", "security", "employee"])
 });
 
+const editUserSchema = z.object({
+  name: z.string().trim().min(2, "Name must be at least 2 characters"),
+  email: z.string().trim().email("Enter a valid email address"),
+  password: z.string().optional().refine((value) => !value || value.length >= 6, "Password must be at least 6 characters"),
+  role: z.enum(["admin", "security", "employee"])
+});
+
 export default function Users() {
   const reduceMotion = useReducedMotion();
   const [open, setOpen] = useState(false);
+  const [editingUser, setEditingUser] = useState<User | null>(null);
   const queryClient = useQueryClient();
   const { toast } = useToast();
   const { user: currentUser } = useAuth();
@@ -51,6 +61,11 @@ export default function Users() {
 
   const form = useForm<z.infer<typeof userSchema>>({
     resolver: zodResolver(userSchema),
+    defaultValues: { name: "", email: "", password: "", role: "employee" }
+  });
+
+  const editForm = useForm<z.infer<typeof editUserSchema>>({
+    resolver: zodResolver(editUserSchema),
     defaultValues: { name: "", email: "", password: "", role: "employee" }
   });
 
@@ -77,8 +92,40 @@ export default function Users() {
     }
   });
 
+  const updateMutation = useUpdateUser({
+    mutation: {
+      onSuccess: () => {
+        toast({ title: "Employee Updated", description: "Employee details have been saved." });
+        queryClient.invalidateQueries({ queryKey: getGetUsersQueryKey() });
+        setEditingUser(null);
+        editForm.reset();
+      },
+      onError: (error) => {
+        toast({ variant: "destructive", title: "Update Failed", description: error.error });
+      }
+    }
+  });
+
   const onSubmit = (data: z.infer<typeof userSchema>) => {
     createMutation.mutate({ data });
+  };
+
+  const handleEdit = (employee: User) => {
+    setEditingUser(employee);
+    editForm.reset({ name: employee.name, email: employee.email, password: "", role: employee.role });
+  };
+
+  const onEditSubmit = (data: z.infer<typeof editUserSchema>) => {
+    if (!editingUser) return;
+    updateMutation.mutate({
+      id: editingUser.id,
+      data: {
+        name: data.name,
+        email: data.email,
+        role: data.role,
+        ...(data.password ? { password: data.password } : {}),
+      }
+    });
   };
 
   const handleDelete = (id: number) => {
@@ -180,6 +227,66 @@ export default function Users() {
         </Dialog>
       </motion.div>
 
+      <Dialog
+        open={!!editingUser}
+        onOpenChange={(isOpen) => {
+          if (!isOpen && !updateMutation.isPending) {
+            setEditingUser(null);
+            editForm.reset();
+          }
+        }}
+      >
+        <DialogContent className="border-border bg-card sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Edit Employee</DialogTitle>
+          </DialogHeader>
+          <Form {...editForm}>
+            <form onSubmit={editForm.handleSubmit(onEditSubmit)} className="space-y-4">
+              <FormField control={editForm.control} name="name" render={({ field }) => (
+                <FormItem>
+                  <FormLabel>Full Name</FormLabel>
+                  <FormControl><Input {...field} className="bg-background" /></FormControl>
+                  <FormMessage />
+                </FormItem>
+              )} />
+              <FormField control={editForm.control} name="email" render={({ field }) => (
+                <FormItem>
+                  <FormLabel>Email Address</FormLabel>
+                  <FormControl><Input {...field} type="email" className="bg-background" /></FormControl>
+                  <FormMessage />
+                </FormItem>
+              )} />
+              <FormField control={editForm.control} name="role" render={({ field }) => (
+                <FormItem>
+                  <FormLabel>Role</FormLabel>
+                  <Select onValueChange={field.onChange} value={field.value}>
+                    <FormControl>
+                      <SelectTrigger className="bg-background"><SelectValue /></SelectTrigger>
+                    </FormControl>
+                    <SelectContent>
+                      <SelectItem value="employee">Employee / Host</SelectItem>
+                      <SelectItem value="security">Security Officer</SelectItem>
+                      <SelectItem value="admin">Administrator</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  <FormMessage />
+                </FormItem>
+              )} />
+              <FormField control={editForm.control} name="password" render={({ field }) => (
+                <FormItem>
+                  <FormLabel>New Password (Optional)</FormLabel>
+                  <FormControl><Input {...field} type="password" autoComplete="new-password" placeholder="Leave blank to keep current password" className="bg-background" /></FormControl>
+                  <FormMessage />
+                </FormItem>
+              )} />
+              <Button type="submit" className="w-full bg-primary" disabled={updateMutation.isPending}>
+                {updateMutation.isPending ? "Saving Changes..." : "Save Changes"}
+              </Button>
+            </form>
+          </Form>
+        </DialogContent>
+      </Dialog>
+
       <Card className="border-border bg-card">
         <CardContent className="p-0">
           <Table>
@@ -224,6 +331,16 @@ export default function Users() {
                       {format(new Date(u.createdAt), "yyyy-MM-dd HH:mm")}
                     </TableCell>
                     <TableCell className="text-right">
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        onClick={() => handleEdit(u)}
+                        className="text-muted-foreground hover:text-primary"
+                        title={`Edit ${u.name}`}
+                        aria-label={`Edit ${u.name}`}
+                      >
+                        <Pencil className="h-4 w-4" />
+                      </Button>
                       {u.id !== currentUser?.id && (
                         <Button variant="ghost" size="icon" onClick={() => handleDelete(u.id)} className="text-muted-foreground hover:text-destructive hover:bg-destructive/10">
                           <Trash2 className="h-4 w-4" />

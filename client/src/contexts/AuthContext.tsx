@@ -5,7 +5,7 @@ import { User, useGetMe, getToken, storeToken, clearToken } from "@/lib/api-clie
 interface AuthContextType {
   user: User | null;
   token: string | null;
-  login: (token: string, user: User) => void;
+  login: (token: string, user: User, rememberMe?: boolean) => void;
   logout: () => void;
   isLoading: boolean;
 }
@@ -34,8 +34,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [me, error]);
 
-  const login = (newToken: string, newUser: User) => {
-    storeToken(newToken);
+  const login = (newToken: string, newUser: User, rememberMe = true) => {
+    storeToken(newToken, rememberMe);
     setToken(newToken);
     setUser(newUser);
   };

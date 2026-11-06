@@ -12,6 +12,11 @@ import { useMutation, useQuery, useQueryClient, type UseMutationOptions, type Us
 
 const TOKEN_KEY = "vms_token";
 
+export interface AuthResponse {
+  token: string;
+  user: User;
+}
+
 export class ApiError extends Error {
   status: number;
   data: any;
@@ -167,15 +172,18 @@ export const getGetNotificationsQueryKey = () => ["/api/notifications"] as const
    Auth
 ================================================================= */
 export function getToken(): string | null {
-  return localStorage.getItem(TOKEN_KEY);
+  return localStorage.getItem(TOKEN_KEY) ?? sessionStorage.getItem(TOKEN_KEY);
 }
 
-export function storeToken(token: string) {
-  localStorage.setItem(TOKEN_KEY, token);
+export function storeToken(token: string, rememberMe = true) {
+  localStorage.removeItem(TOKEN_KEY);
+  sessionStorage.removeItem(TOKEN_KEY);
+  (rememberMe ? localStorage : sessionStorage).setItem(TOKEN_KEY, token);
 }
 
 export function clearToken() {
   localStorage.removeItem(TOKEN_KEY);
+  sessionStorage.removeItem(TOKEN_KEY);
 }
 
 export function useGetMe(options?: { query?: Partial<UseQueryOptions<User, ApiError>> }) {
@@ -187,11 +195,27 @@ export function useGetMe(options?: { query?: Partial<UseQueryOptions<User, ApiEr
 }
 
 export function useLogin(options?: {
-  mutation?: UseMutationOptions<{ token: string; user: User }, ApiError, { data: { email: string; password: string } }>;
+  mutation?: UseMutationOptions<AuthResponse, ApiError, { data: { email: string; password: string } }>;
 }) {
-  return useMutation<{ token: string; user: User }, ApiError, { data: { email: string; password: string } }>({
+  return useMutation<AuthResponse, ApiError, { data: { email: string; password: string } }>({
     mutationFn: (vars) =>
       request("/api/auth/login", { method: "POST", body: JSON.stringify(vars.data) }),
+    ...options?.mutation,
+  });
+}
+
+export interface SignupInput {
+  name: string;
+  email: string;
+  password: string;
+}
+
+export function useSignup(options?: {
+  mutation?: UseMutationOptions<AuthResponse, ApiError, { data: SignupInput }>;
+}) {
+  return useMutation<AuthResponse, ApiError, { data: SignupInput }>({
+    mutationFn: (vars) =>
+      request("/api/auth/signup", { method: "POST", body: JSON.stringify(vars.data) }),
     ...options?.mutation,
   });
 }
@@ -311,6 +335,13 @@ export interface CreateUserInput {
   role: UserRole;
 }
 
+export interface UpdateUserInput {
+  name: string;
+  email: string;
+  password?: string;
+  role: UserRole;
+}
+
 export function useGetUsers(options?: { query?: Partial<UseQueryOptions<User[], ApiError>> }) {
   return useQuery<User[], ApiError>({
     queryKey: getGetUsersQueryKey(),
@@ -322,6 +353,13 @@ export function useGetUsers(options?: { query?: Partial<UseQueryOptions<User[], 
 export function useCreateUser(options?: { mutation?: UseMutationOptions<User, ApiError, { data: CreateUserInput }> }) {
   return useMutation<User, ApiError, { data: CreateUserInput }>({
     mutationFn: (vars) => request("/api/users", { method: "POST", body: JSON.stringify(vars.data) }),
+    ...options?.mutation,
+  });
+}
+
+export function useUpdateUser(options?: { mutation?: UseMutationOptions<User, ApiError, { id: number; data: UpdateUserInput }> }) {
+  return useMutation<User, ApiError, { id: number; data: UpdateUserInput }>({
+    mutationFn: (vars) => request(`/api/users/${vars.id}`, { method: "PUT", body: JSON.stringify(vars.data) }),
     ...options?.mutation,
   });
 }
