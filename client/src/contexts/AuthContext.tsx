@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useEffect, useState, ReactNode } from "react";
 import { useLocation } from "wouter";
-import { User, useGetMe, getToken, storeToken, clearToken } from "@/lib/api-client";
+import { ApiError, User, useGetMe, getToken, storeToken, clearToken } from "@/lib/api-client";
 
 interface AuthContextType {
   user: User | null;
@@ -20,7 +20,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const { data: me, isLoading: isLoadingMe, error } = useGetMe({
     query: {
       enabled: !!token,
-      retry: false,
+      retry: (failureCount, queryError) =>
+        !(queryError instanceof ApiError && (queryError.status === 401 || queryError.status === 403)) &&
+        failureCount < 2,
     },
   });
 
@@ -28,7 +30,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     if (me) {
       setUser(me);
     }
-    if (error) {
+    if (error instanceof ApiError && (error.status === 401 || error.status === 403)) {
       logout();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps

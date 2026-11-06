@@ -34,8 +34,8 @@ export default function Login() {
 
   const loginMutation = useLogin({
     mutation: {
-      onSuccess: (data) => {
-        login(data.token, data.user, rememberMe);
+      onSuccess: (data, variables) => {
+        login(data.token, data.user, variables.rememberMe);
         setLocation("/");
       },
       onError: (error) => {
@@ -50,8 +50,8 @@ export default function Login() {
 
   const signupMutation = useSignup({
     mutation: {
-      onSuccess: (data) => {
-        login(data.token, data.user, rememberMe);
+      onSuccess: (data, variables) => {
+        login(data.token, data.user, variables.rememberMe);
         toast({ title: "Account created", description: "You can now access the visitor management system." });
         setLocation("/");
       },
@@ -81,11 +81,11 @@ export default function Login() {
         toast({ variant: "destructive", title: "Passwords do not match", description: "Confirm your password and try again." });
         return;
       }
-      signupMutation.mutate({ data: { name, email, password } });
+      signupMutation.mutate({ data: { name, email, password }, rememberMe });
       return;
     }
 
-    loginMutation.mutate({ data: { email, password } });
+    loginMutation.mutate({ data: { email, password }, rememberMe });
   };
 
   const isPending = loginMutation.isPending || signupMutation.isPending;

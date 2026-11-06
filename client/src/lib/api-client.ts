@@ -195,9 +195,9 @@ export function useGetMe(options?: { query?: Partial<UseQueryOptions<User, ApiEr
 }
 
 export function useLogin(options?: {
-  mutation?: UseMutationOptions<AuthResponse, ApiError, { data: { email: string; password: string } }>;
+  mutation?: UseMutationOptions<AuthResponse, ApiError, { data: { email: string; password: string }; rememberMe: boolean }>;
 }) {
-  return useMutation<AuthResponse, ApiError, { data: { email: string; password: string } }>({
+  return useMutation<AuthResponse, ApiError, { data: { email: string; password: string }; rememberMe: boolean }>({
     mutationFn: (vars) =>
       request("/api/auth/login", { method: "POST", body: JSON.stringify(vars.data) }),
     ...options?.mutation,
@@ -211,9 +211,9 @@ export interface SignupInput {
 }
 
 export function useSignup(options?: {
-  mutation?: UseMutationOptions<AuthResponse, ApiError, { data: SignupInput }>;
+  mutation?: UseMutationOptions<AuthResponse, ApiError, { data: SignupInput; rememberMe: boolean }>;
 }) {
-  return useMutation<AuthResponse, ApiError, { data: SignupInput }>({
+  return useMutation<AuthResponse, ApiError, { data: SignupInput; rememberMe: boolean }>({
     mutationFn: (vars) =>
       request("/api/auth/signup", { method: "POST", body: JSON.stringify(vars.data) }),
     ...options?.mutation,
