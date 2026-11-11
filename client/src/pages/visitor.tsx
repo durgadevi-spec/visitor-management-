@@ -1,30 +1,73 @@
 import { useLocation, useParams } from "wouter";
 import { jsPDF } from "jspdf";
+import { useForm } from "react-hook-form";
+import { z } from "zod";
+import { zodResolver } from "@hookform/resolvers/zod";
 import { 
   useGetVisitor, 
+  useGetVisitorAudit,
+  useGetVisitorGadgets,
   getGetVisitorQueryKey,
-  useApproveVisitor,
+  getGetVisitorAuditQueryKey,
+  getGetVisitorGadgetsQueryKey,
+  getGetVisitorsQueryKey,
   useCheckinVisitor,
-  useCheckoutVisitor
+  useCheckoutVisitor,
+  useReviewVisitorGadget,
+  useReturnVisitorGadget,
+  useUpdateVisitor,
+  useGetSystemSettings,
+  type UpdateVisitorInput,
 } from "@/lib/api-client";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Input } from "@/components/ui/input";
+import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { format } from "date-fns";
 import { 
-  UserCircle, Printer, CheckCircle, XCircle, LogIn, LogOut, 
-  Clock, ShieldAlert, FileText, Phone, Mail, Building, ArrowLeft 
+  UserCircle, Printer, LogIn, LogOut, 
+  Clock, ShieldAlert, FileText, Phone, Mail, Building, ArrowLeft, Pencil, History
 } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
+import { useAuth } from "@/contexts/AuthContext";
+
+const editVisitorSchema = z.object({
+  name: z.string().min(2, "Name is required"),
+  mobile: z.string().regex(/^\d{10}$/, "Mobile number must be exactly 10 digits"),
+  email: z.string().email().optional().or(z.literal("")),
+  purpose: z.string().min(2, "Purpose required"),
+  personToMeet: z.string().min(2, "Host name required"),
+  idProofType: z.enum(["aadhar", "pan", "passport", "driving_license", "voter_id"]),
+  idNumber: z.string().min(4, "ID Number required"),
+});
 
 export default function VisitorDetail() {
   const { id } = useParams<{ id: string }>();
   const [, setLocation] = useLocation();
   const queryClient = useQueryClient();
   const { toast } = useToast();
+  const { user } = useAuth();
+  const [editOpen, setEditOpen] = useState(false);
+  const [qrCodeImage, setQrCodeImage] = useState<string | null>(null);
+  const editForm = useForm<UpdateVisitorInput>({
+    resolver: zodResolver(editVisitorSchema),
+    mode: "onBlur",
+    defaultValues: {
+      name: "",
+      mobile: "",
+      email: "",
+      purpose: "",
+      personToMeet: "",
+      idProofType: "aadhar",
+      idNumber: "",
+    },
+  });
   
   const { data: visitor, isLoading } = useGetVisitor(id!, {
     query: {
@@ -32,30 +75,56 @@ export default function VisitorDetail() {
       queryKey: getGetVisitorQueryKey(id!)
     }
   });
-
-  const approveMutation = useApproveVisitor({
-    mutation: {
-      onSuccess: () => {
-        toast({ title: "Status Updated", description: "Visitor approved successfully." });
-        queryClient.invalidateQueries({ queryKey: getGetVisitorQueryKey(id!) });
-      }
-    }
+  const { data: systemSettings } = useGetSystemSettings();
+  const { data: auditEntries, isLoading: auditLoading, isError: auditError } = useGetVisitorAudit(id!, {
+    query: { enabled: !!id },
   });
-
-  const rejectMutation = useApproveVisitor({
-    mutation: {
-      onSuccess: () => {
-        toast({ title: "Status Updated", description: "Visitor rejected.", variant: "destructive" });
-        queryClient.invalidateQueries({ queryKey: getGetVisitorQueryKey(id!) });
-      }
-    }
+  const { data: gadgets, isLoading: gadgetsLoading, isError: gadgetsError } = useGetVisitorGadgets(id!, {
+    query: { enabled: !!id },
   });
+  const canReviewGadgets = user?.role === "admin" || user?.role === "security";
+  const gadgetsPendingCheckout = gadgets?.some((gadget) =>
+    gadget.approvalStatus === "approved" && !gadget.returnedAt,
+  ) ?? false;
+
+  const refreshGadgets = () => {
+    queryClient.invalidateQueries({ queryKey: getGetVisitorGadgetsQueryKey(id!) });
+    queryClient.invalidateQueries({ queryKey: getGetVisitorAuditQueryKey(id!) });
+  };
+
+  useEffect(() => {
+    if (!visitor) return;
+
+    let active = true;
+    setQrCodeImage(null);
+    const appBasePath = import.meta.env.BASE_URL.replace(/\/$/, "");
+    const visitorUrl = new URL(`${appBasePath}/visitor/${visitor.id}`, window.location.origin).toString();
+    void import("qrcode")
+      .then(({ default: QRCode }) => QRCode.toDataURL(visitorUrl, { width: 256, margin: 1, errorCorrectionLevel: "M" }))
+      .then((image) => {
+        if (active) setQrCodeImage(image);
+      })
+      .catch((error: unknown) => {
+        if (!active) return;
+        toast({
+          title: "QR Code Generation Failed",
+          description: error instanceof Error ? error.message : "Unable to generate the visitor pass QR code.",
+          variant: "destructive",
+        });
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [visitor?.id, toast]);
 
   const checkinMutation = useCheckinVisitor({
     mutation: {
       onSuccess: () => {
         toast({ title: "Checked In", description: "Visitor has been checked in." });
         queryClient.invalidateQueries({ queryKey: getGetVisitorQueryKey(id!) });
+        queryClient.invalidateQueries({ queryKey: getGetVisitorAuditQueryKey(id!) });
+        queryClient.invalidateQueries({ queryKey: getGetVisitorsQueryKey() });
       }
     }
   });
@@ -65,14 +134,61 @@ export default function VisitorDetail() {
       onSuccess: () => {
         toast({ title: "Checked Out", description: "Visitor has been checked out." });
         queryClient.invalidateQueries({ queryKey: getGetVisitorQueryKey(id!) });
-      }
+        queryClient.invalidateQueries({ queryKey: getGetVisitorAuditQueryKey(id!) });
+        queryClient.invalidateQueries({ queryKey: getGetVisitorsQueryKey() });
+      },
+      onError: (error) => toast({ title: "Check Out Failed", description: error.error, variant: "destructive" }),
     }
   });
 
-  const handleApprove = () => approveMutation.mutate({ id: id!, data: { action: "approve" } });
-  const handleReject = () => rejectMutation.mutate({ id: id!, data: { action: "reject", remarks: "Security rejection" } });
+  const reviewGadgetMutation = useReviewVisitorGadget({
+    mutation: {
+      onSuccess: refreshGadgets,
+      onError: (error) => toast({ title: "Gadget Review Failed", description: error.error, variant: "destructive" }),
+    },
+  });
+  const returnGadgetMutation = useReturnVisitorGadget({
+    mutation: {
+      onSuccess: refreshGadgets,
+      onError: (error) => toast({ title: "Return Verification Failed", description: error.error, variant: "destructive" }),
+    },
+  });
+
+  const updateMutation = useUpdateVisitor({
+    mutation: {
+      onSuccess: () => {
+        toast({ title: "Visitor Updated", description: "Visitor details have been saved." });
+        setEditOpen(false);
+        queryClient.invalidateQueries({ queryKey: getGetVisitorQueryKey(id!) });
+        queryClient.invalidateQueries({ queryKey: getGetVisitorAuditQueryKey(id!) });
+        queryClient.invalidateQueries({ queryKey: getGetVisitorsQueryKey() });
+      },
+      onError: (error) => {
+        toast({ title: "Update Failed", description: error.error, variant: "destructive" });
+      },
+    },
+  });
+
+  useEffect(() => {
+    if (!visitor || !editOpen) return;
+    editForm.reset({
+      name: visitor.name,
+      mobile: visitor.mobile,
+      email: visitor.email ?? "",
+      purpose: visitor.purpose,
+      personToMeet: visitor.personToMeet,
+      idProofType: visitor.idProofType,
+      idNumber: visitor.idNumber,
+    });
+  }, [visitor, editOpen, editForm]);
+
   const handleCheckin = () => checkinMutation.mutate({ id: id! });
   const handleCheckout = () => checkoutMutation.mutate({ id: id! });
+  const handleGadgetReview = (gadgetId: number, action: "approve" | "reject") =>
+    reviewGadgetMutation.mutate({ visitorId: id!, gadgetId, action });
+  const handleGadgetReturn = (gadgetId: number) =>
+    returnGadgetMutation.mutate({ visitorId: id!, gadgetId });
+  const handleUpdate = (data: UpdateVisitorInput) => updateMutation.mutate({ id: id!, data });
 
   const printBadge = () => {
     window.print();
@@ -99,6 +215,10 @@ export default function VisitorDetail() {
 
   const downloadVisitorPassPdf = async () => {
     if (!visitor) return;
+    if (!qrCodeImage) {
+      toast({ title: "QR Code Not Ready", description: "Please wait for the visitor pass QR code to load.", variant: "destructive" });
+      return;
+    }
 
     const doc = new jsPDF({ orientation: "portrait", unit: "mm", format: "a6" });
     const pageWidth = 105;
@@ -115,11 +235,13 @@ export default function VisitorDetail() {
 
     doc.setFont("helvetica", "bold");
     doc.setFontSize(10);
-    doc.text("Concept Trunk Interiors", 52.5, 14, { align: "center" });
+    doc.text(systemSettings?.facilityName ?? "Visitor Management", 52.5, 14, { align: "center" });
 
     doc.setFontSize(8);
     doc.setFont("helvetica", "normal");
     doc.text("Visitor Pass", 52.5, 20, { align: "center" });
+    doc.setFontSize(6);
+    doc.text(systemSettings?.contactEmail ?? "", 52.5, 25, { align: "center" });
 
     try {
       const logoImageUrl = new URL("/company-logo.png", window.location.origin).toString();
@@ -171,9 +293,9 @@ export default function VisitorDetail() {
       doc.text(line, 15, y);
     });
 
+    doc.addImage(qrCodeImage, "PNG", 40, 110, 25, 25);
     doc.setFontSize(6.5);
-    doc.text("Please carry this pass during your visit.", 15, 116);
-    doc.text(`Issued on ${format(new Date(visitor.createdAt), "MMM d, yyyy")}`, 15, 121);
+    doc.text("Scan this code to open the visitor profile.", 52.5, 138, { align: "center" });
 
     doc.save(`visitor-pass-${visitor.visitorId}.pdf`);
   };
@@ -206,24 +328,22 @@ export default function VisitorDetail() {
           <Button variant="outline" onClick={() => setLocation("/")}>
             <ArrowLeft className="mr-2 h-4 w-4" /> Back to Dashboard
           </Button>
-          {visitor.status === "pending" && (
-            <>
-              <Button variant="outline" className="border-green-500/50 text-green-500 hover:bg-green-500/10" onClick={handleApprove} disabled={approveMutation.isPending}>
-                <CheckCircle className="mr-2 h-4 w-4" /> Approve
-              </Button>
-              <Button variant="outline" className="border-red-500/50 text-red-500 hover:bg-red-500/10" onClick={handleReject} disabled={rejectMutation.isPending}>
-                <XCircle className="mr-2 h-4 w-4" /> Reject
-              </Button>
-            </>
-          )}
-          {visitor.status === "approved" && (
+          <Button variant="outline" onClick={() => setEditOpen(true)}>
+            <Pencil className="mr-2 h-4 w-4" /> Edit Visitor
+          </Button>
+          {(visitor.status === "pending" || visitor.status === "approved") && (
             <Button variant="default" className="bg-blue-500 hover:bg-blue-600 text-white" onClick={handleCheckin} disabled={checkinMutation.isPending}>
               <LogIn className="mr-2 h-4 w-4" /> Check In
             </Button>
           )}
           {visitor.status === "checked_in" && (
-            <Button variant="default" className="bg-green-500 hover:bg-green-600 text-white" onClick={handleCheckout} disabled={checkoutMutation.isPending}>
-              <LogOut className="mr-2 h-4 w-4" /> Check Out
+            <Button
+              variant="default"
+              className="bg-green-500 hover:bg-green-600 text-white"
+              onClick={handleCheckout}
+              disabled={checkoutMutation.isPending || gadgetsLoading || gadgetsError || gadgetsPendingCheckout}
+            >
+              <LogOut className="mr-2 h-4 w-4" /> {gadgetsPendingCheckout ? "Verify Gadget Returns" : "Check Out"}
             </Button>
           )}
           <Button variant="secondary" onClick={printBadge}>
@@ -234,6 +354,88 @@ export default function VisitorDetail() {
           </Button>
         </div>
       </div>
+      {visitor.status === "checked_in" && gadgetsError && (
+        <p role="alert" className="text-sm text-destructive print:hidden">Gadget status could not be verified, so checkout is temporarily unavailable. Refresh and try again.</p>
+      )}
+
+      <Dialog open={editOpen} onOpenChange={setEditOpen}>
+        <DialogContent className="max-h-[90vh] overflow-y-auto border-border bg-card sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Edit Visitor Details</DialogTitle>
+            <CardDescription>Update the visitor's registration information.</CardDescription>
+          </DialogHeader>
+          <Form {...editForm}>
+            <form onSubmit={editForm.handleSubmit(handleUpdate)} className="space-y-4">
+              <FormField control={editForm.control} name="name" render={({ field }) => (
+                <FormItem>
+                  <FormLabel>Full Name</FormLabel>
+                  <FormControl><Input {...field} /></FormControl>
+                  <FormMessage />
+                </FormItem>
+              )} />
+              <FormField control={editForm.control} name="mobile" render={({ field }) => (
+                <FormItem>
+                  <FormLabel>Mobile Number</FormLabel>
+                  <FormControl><Input {...field} type="tel" inputMode="numeric" maxLength={10} /></FormControl>
+                  <FormMessage />
+                </FormItem>
+              )} />
+              <FormField control={editForm.control} name="email" render={({ field }) => (
+                <FormItem>
+                  <FormLabel>Email Address (Optional)</FormLabel>
+                  <FormControl><Input {...field} /></FormControl>
+                  <FormMessage />
+                </FormItem>
+              )} />
+              <FormField control={editForm.control} name="personToMeet" render={({ field }) => (
+                <FormItem>
+                  <FormLabel>Host / Person to Meet</FormLabel>
+                  <FormControl><Input {...field} /></FormControl>
+                  <FormMessage />
+                </FormItem>
+              )} />
+              <FormField control={editForm.control} name="purpose" render={({ field }) => (
+                <FormItem>
+                  <FormLabel>Purpose of Visit</FormLabel>
+                  <FormControl><Input {...field} /></FormControl>
+                  <FormMessage />
+                </FormItem>
+              )} />
+              <FormField control={editForm.control} name="idProofType" render={({ field }) => (
+                <FormItem>
+                  <FormLabel>ID Type</FormLabel>
+                  <Select onValueChange={field.onChange} value={field.value}>
+                    <FormControl>
+                      <SelectTrigger><SelectValue placeholder="Select ID type" /></SelectTrigger>
+                    </FormControl>
+                    <SelectContent>
+                      <SelectItem value="aadhar">Aadhar</SelectItem>
+                      <SelectItem value="pan">PAN</SelectItem>
+                      <SelectItem value="passport">Passport</SelectItem>
+                      <SelectItem value="driving_license">Driving License</SelectItem>
+                      <SelectItem value="voter_id">Voter ID</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  <FormMessage />
+                </FormItem>
+              )} />
+              <FormField control={editForm.control} name="idNumber" render={({ field }) => (
+                <FormItem>
+                  <FormLabel>ID Number</FormLabel>
+                  <FormControl><Input {...field} className="font-mono uppercase" /></FormControl>
+                  <FormMessage />
+                </FormItem>
+              )} />
+              <div className="flex justify-end gap-2 pt-2">
+                <Button type="button" variant="outline" onClick={() => setEditOpen(false)}>Cancel</Button>
+                <Button type="submit" disabled={updateMutation.isPending}>
+                  {updateMutation.isPending ? "Saving..." : "Save Changes"}
+                </Button>
+              </div>
+            </form>
+          </Form>
+        </DialogContent>
+      </Dialog>
 
       {visitor.isBlacklisted && (
         <div className="rounded-lg border border-destructive/40 bg-destructive/10 p-4 text-sm text-destructive">
@@ -247,7 +449,10 @@ export default function VisitorDetail() {
         <div className="lg:col-span-1 print:w-full print:h-screen print:flex print:items-center print:justify-center print:bg-white">
           <Card className="border-border bg-card overflow-hidden print:w-[300px] print:h-[450px] print:border-2 print:border-black print:bg-white print:text-black print:shadow-none">
             <div className="bg-primary/20 border-b border-primary/30 p-4 text-center print:bg-white print:text-black print:border-none">
-              <h2 className="font-bold tracking-widest text-primary print:text-black">VISITOR PASS</h2>
+              <h2 className="font-bold tracking-widest text-primary print:text-black">{systemSettings?.facilityName ?? "VISITOR PASS"}</h2>
+              {systemSettings?.contactEmail && (
+                <p className="mt-1 text-[10px] text-muted-foreground print:text-gray-600">{systemSettings.contactEmail}</p>
+              )}
             </div>
             <CardContent className="p-6 space-y-6 flex flex-col items-center text-center">
               <div className="w-32 h-32 rounded-lg overflow-hidden border-2 border-border print:border-gray-300">
@@ -277,14 +482,10 @@ export default function VisitorDetail() {
                 </div>
               </div>
 
-              {/* QR Code Placeholder Box */}
               <div className="w-24 h-24 bg-white border border-gray-200 p-2 flex items-center justify-center">
-                <div className="w-full h-full grid grid-cols-4 grid-rows-4 gap-0.5">
-                  {/* Fake QR pattern based on ID hash for visual effect */}
-                  {Array(16).fill(0).map((_, i) => (
-                    <div key={i} className={visitor.id.charCodeAt(i % visitor.id.length) % 2 === 0 ? "bg-black" : "bg-white"}></div>
-                  ))}
-                </div>
+                {qrCodeImage
+                  ? <img src={qrCodeImage} alt="Scannable visitor pass QR code" className="h-full w-full" />
+                  : <span className="text-xs text-muted-foreground" role="status">Generating QR...</span>}
               </div>
             </CardContent>
           </Card>
@@ -349,7 +550,7 @@ export default function VisitorDetail() {
                       <div className="font-bold text-foreground">Registered</div>
                       <time className="font-mono text-xs text-muted-foreground">{format(new Date(visitor.createdAt), "HH:mm")}</time>
                     </div>
-                    <div className="text-sm text-muted-foreground">Pre-registered into system</div>
+                    <div className="text-sm text-muted-foreground">Registered into system</div>
                   </div>
                 </div>
 
@@ -385,6 +586,98 @@ export default function VisitorDetail() {
                   </div>
                 )}
               </div>
+            </CardContent>
+          </Card>
+
+          <Card className="border-border bg-card">
+            <CardHeader>
+              <CardTitle className="text-lg">Gadgets Carried Inside</CardTitle>
+              <CardDescription>Optional items recorded at registration. Gadget approval is separate from visitor check-in.</CardDescription>
+            </CardHeader>
+            <CardContent>
+              {gadgetsLoading ? (
+                <Skeleton className="h-16 w-full" />
+              ) : gadgetsError ? (
+                <p role="alert" className="text-sm text-destructive">Unable to load visitor gadgets. Please refresh and try again.</p>
+              ) : gadgets?.length ? (
+                <div className="space-y-3">
+                  {gadgets.map((gadget) => (
+                    <div key={gadget.id} className="flex flex-col gap-3 rounded-md border border-border p-3 sm:flex-row sm:items-center sm:justify-between">
+                      <div className="min-w-0">
+                        <div className="font-medium">{gadget.name}</div>
+                        <div className="text-sm text-muted-foreground">
+                          {[gadget.makeModel, gadget.serialNumber ? `Serial: ${gadget.serialNumber}` : null].filter(Boolean).join(" · ") || "No make/model or serial number provided"}
+                        </div>
+                        {gadget.returnedAt && <div className="mt-1 text-xs text-muted-foreground">Return verified {format(new Date(gadget.returnedAt), "PPpp")}</div>}
+                      </div>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <Badge variant="outline" className={
+                          gadget.approvalStatus === "approved" ? "border-green-500/30 bg-green-500/10 text-green-600" :
+                          gadget.approvalStatus === "rejected" ? "border-destructive/30 bg-destructive/10 text-destructive" :
+                          "border-yellow-500/30 bg-yellow-500/10 text-yellow-600"
+                        }>
+                          {gadget.approvalStatus}
+                        </Badge>
+                        {gadget.approvalStatus === "pending" && canReviewGadgets && visitor.status === "checked_in" && (
+                          <>
+                            <Button size="sm" onClick={() => handleGadgetReview(gadget.id, "approve")} disabled={reviewGadgetMutation.isPending || returnGadgetMutation.isPending}>Approve</Button>
+                            <Button size="sm" variant="destructive" onClick={() => handleGadgetReview(gadget.id, "reject")} disabled={reviewGadgetMutation.isPending || returnGadgetMutation.isPending}>Reject</Button>
+                          </>
+                        )}
+                        {gadget.approvalStatus === "approved" && !gadget.returnedAt && canReviewGadgets && visitor.status === "checked_in" && (
+                          <Button size="sm" variant="outline" onClick={() => handleGadgetReturn(gadget.id)} disabled={returnGadgetMutation.isPending || reviewGadgetMutation.isPending}>Verify Returned</Button>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                  {gadgets.some((gadget) => gadget.approvalStatus === "approved" && !gadget.returnedAt) && (
+                    <p className="text-sm text-amber-600">All approved gadgets must be verified as returned before the visitor can be checked out.</p>
+                  )}
+                  {!canReviewGadgets && gadgets.some((gadget) => gadget.approvalStatus === "approved" && !gadget.returnedAt) && (
+                    <p className="text-sm text-muted-foreground">Ask security or an administrator to verify the gadget return before checkout.</p>
+                  )}
+                </div>
+              ) : (
+                <p className="text-sm text-muted-foreground">No gadgets were recorded for this visit.</p>
+              )}
+            </CardContent>
+          </Card>
+
+          <Card className="border-border bg-card">
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2 text-lg">
+                <History className="h-4 w-4 text-primary" />
+                Activity Audit
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              {auditLoading ? (
+                <div className="space-y-3">
+                  <Skeleton className="h-14 w-full" />
+                  <Skeleton className="h-14 w-full" />
+                </div>
+              ) : auditError ? (
+                <p role="alert" className="text-sm text-destructive">Unable to load visitor activity history.</p>
+              ) : auditEntries?.length ? (
+                <ol className="space-y-3">
+                  {auditEntries.map((entry) => (
+                    <li key={entry.id} className="rounded-md border border-border bg-muted/20 p-3">
+                      <div className="flex flex-col justify-between gap-1 sm:flex-row sm:items-start">
+                        <div>
+                          <div className="text-sm font-semibold capitalize">{entry.action.replaceAll("_", " ")}</div>
+                          <p className="text-sm text-muted-foreground">{entry.details}</p>
+                          <p className="mt-1 text-xs text-muted-foreground">By {entry.actorEmail}</p>
+                        </div>
+                        <time className="shrink-0 font-mono text-xs text-muted-foreground">
+                          {format(new Date(entry.createdAt), "MMM d, yyyy HH:mm:ss")}
+                        </time>
+                      </div>
+                    </li>
+                  ))}
+                </ol>
+              ) : (
+                <p className="text-sm text-muted-foreground">No recorded activity yet.</p>
+              )}
             </CardContent>
           </Card>
         </div>

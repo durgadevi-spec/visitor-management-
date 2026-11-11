@@ -105,6 +105,40 @@ export interface Visitor {
   createdAt: string;
 }
 
+export interface VisitorAuditEntry {
+  id: number;
+  visitorId: string;
+  action: string;
+  actorUserId: number | null;
+  actorEmail: string;
+  details: string;
+  createdAt: string;
+}
+
+export interface VisitorGadget {
+  id: number;
+  visitorId: string;
+  name: string;
+  makeModel: string | null;
+  serialNumber: string | null;
+  approvalStatus: "pending" | "approved" | "rejected";
+  reviewedBy: number | null;
+  reviewedAt: string | null;
+  returnedAt: string | null;
+  createdAt: string;
+}
+
+export interface VisitorLookupMatch {
+  id: string;
+  name: string;
+  mobile: string;
+  email: string | null;
+  personToMeet: string;
+  idProofType: IdProofType;
+  idNumber: string;
+  createdAt: string;
+}
+
 export interface BlacklistEntry {
   id: number;
   name: string;
@@ -154,12 +188,26 @@ export interface ReportData {
   statusBreakdown: { status: string; count: number }[];
 }
 
+export interface SystemSettings {
+  id: number;
+  facilityName: string;
+  contactEmail: string;
+  autoCheckoutEnabled: boolean;
+  autoCheckoutTime: string;
+  timezone: string;
+  requirePhoto: boolean;
+}
+
 /* ================================================================
    Query keys
 ================================================================= */
 export const getGetVisitorsQueryKey = (params?: { status?: string; date?: string; search?: string; person_to_meet?: string }) =>
   ["/api/visitors", params ?? {}] as const;
+export const getLookupVisitorsByMobileQueryKey = (mobile: string) => ["/api/visitors/lookup", mobile] as const;
+export const getGetAllVisitorGadgetsQueryKey = () => ["/api/gadgets"] as const;
 export const getGetVisitorQueryKey = (id: string) => ["/api/visitors", id] as const;
+export const getGetVisitorAuditQueryKey = (id: string) => ["/api/visitors", id, "audit"] as const;
+export const getGetVisitorGadgetsQueryKey = (id: string) => ["/api/visitors", id, "gadgets"] as const;
 export const getGetReportsQueryKey = (params?: { period?: string }) => ["/api/reports", params ?? {}] as const;
 export const getGetDashboardStatsQueryKey = () => ["/api/dashboard/stats"] as const;
 export const getGetRecentVisitorsQueryKey = () => ["/api/dashboard/recent"] as const;
@@ -167,6 +215,7 @@ export const getGetActivityFeedQueryKey = () => ["/api/dashboard/activity"] as c
 export const getGetBlacklistQueryKey = () => ["/api/blacklist"] as const;
 export const getGetUsersQueryKey = () => ["/api/users"] as const;
 export const getGetNotificationsQueryKey = () => ["/api/notifications"] as const;
+export const getGetSystemSettingsQueryKey = () => ["/api/settings"] as const;
 
 /* ================================================================
    Auth
@@ -191,6 +240,23 @@ export function useGetMe(options?: { query?: Partial<UseQueryOptions<User, ApiEr
     queryKey: ["/api/auth/me"],
     queryFn: () => request<User>("/api/auth/me"),
     ...options?.query,
+  });
+}
+
+export function useGetSystemSettings(options?: { query?: Partial<UseQueryOptions<SystemSettings, ApiError>> }) {
+  return useQuery<SystemSettings, ApiError>({
+    queryKey: getGetSystemSettingsQueryKey(),
+    queryFn: () => request<SystemSettings>("/api/settings"),
+    ...options?.query,
+  });
+}
+
+export function useUpdateSystemSettings(options?: {
+  mutation?: UseMutationOptions<SystemSettings, ApiError, Omit<SystemSettings, "id">>;
+}) {
+  return useMutation<SystemSettings, ApiError, Omit<SystemSettings, "id">>({
+    mutationFn: (data) => request("/api/settings", { method: "PUT", body: JSON.stringify(data) }),
+    ...options?.mutation,
   });
 }
 
@@ -233,7 +299,12 @@ export interface CreateVisitorInput {
   idProofType: IdProofType;
   idNumber: string;
   photoUrl?: string | null;
+  gadgets?: { name: string; makeModel?: string | null; serialNumber?: string | null }[];
 }
+
+export type UpdateVisitorInput = Omit<CreateVisitorInput, "personToMeetId" | "photoUrl" | "email"> & {
+  email?: string;
+};
 
 export function useGetVisitors(
   params?: { status?: string; date?: string; search?: string; person_to_meet?: string },
@@ -246,6 +317,17 @@ export function useGetVisitors(
   });
 }
 
+export function useLookupVisitorsByMobile(
+  mobile: string,
+  options?: { query?: Partial<UseQueryOptions<VisitorLookupMatch[], ApiError>> },
+) {
+  return useQuery<VisitorLookupMatch[], ApiError>({
+    queryKey: getLookupVisitorsByMobileQueryKey(mobile),
+    queryFn: () => request<VisitorLookupMatch[]>(`/api/visitors/lookup${buildQueryString({ mobile })}`),
+    ...options?.query,
+  });
+}
+
 export function useGetVisitor(id: string, options?: { query?: Partial<UseQueryOptions<Visitor, ApiError>> }) {
   return useQuery<Visitor, ApiError>({
     queryKey: getGetVisitorQueryKey(id),
@@ -254,9 +336,64 @@ export function useGetVisitor(id: string, options?: { query?: Partial<UseQueryOp
   });
 }
 
+export function useGetVisitorAudit(id: string, options?: { query?: Partial<UseQueryOptions<VisitorAuditEntry[], ApiError>> }) {
+  return useQuery<VisitorAuditEntry[], ApiError>({
+    queryKey: getGetVisitorAuditQueryKey(id),
+    queryFn: () => request<VisitorAuditEntry[]>(`/api/visitors/${id}/audit`),
+    ...options?.query,
+  });
+}
+
+export function useGetVisitorGadgets(id: string, options?: { query?: Partial<UseQueryOptions<VisitorGadget[], ApiError>> }) {
+  return useQuery<VisitorGadget[], ApiError>({
+    queryKey: getGetVisitorGadgetsQueryKey(id),
+    queryFn: () => request<VisitorGadget[]>(`/api/visitors/${id}/gadgets`),
+    ...options?.query,
+  });
+}
+
+export function useGetAllVisitorGadgets(options?: { query?: Partial<UseQueryOptions<VisitorGadget[], ApiError>> }) {
+  return useQuery<VisitorGadget[], ApiError>({
+    queryKey: getGetAllVisitorGadgetsQueryKey(),
+    queryFn: () => request<VisitorGadget[]>("/api/gadgets"),
+    ...options?.query,
+  });
+}
+
+export function useReviewVisitorGadget(options?: {
+  mutation?: UseMutationOptions<VisitorGadget, ApiError, { visitorId: string; gadgetId: number; action: "approve" | "reject" }>;
+}) {
+  return useMutation<VisitorGadget, ApiError, { visitorId: string; gadgetId: number; action: "approve" | "reject" }>({
+    mutationFn: ({ visitorId, gadgetId, action }) => request(`/api/visitors/${visitorId}/gadgets/${gadgetId}/approval`, {
+      method: "PUT",
+      body: JSON.stringify({ action }),
+    }),
+    ...options?.mutation,
+  });
+}
+
+export function useReturnVisitorGadget(options?: {
+  mutation?: UseMutationOptions<VisitorGadget, ApiError, { visitorId: string; gadgetId: number }>;
+}) {
+  return useMutation<VisitorGadget, ApiError, { visitorId: string; gadgetId: number }>({
+    mutationFn: ({ visitorId, gadgetId }) => request(`/api/visitors/${visitorId}/gadgets/${gadgetId}/return`, { method: "PUT" }),
+    ...options?.mutation,
+  });
+}
+
 export function useCreateVisitor(options?: { mutation?: UseMutationOptions<Visitor, ApiError, { data: CreateVisitorInput }> }) {
   return useMutation<Visitor, ApiError, { data: CreateVisitorInput }>({
     mutationFn: (vars) => request("/api/visitors", { method: "POST", body: JSON.stringify(vars.data) }),
+    ...options?.mutation,
+  });
+}
+
+export function useUpdateVisitor(options?: {
+  mutation?: UseMutationOptions<Visitor, ApiError, { id: string; data: UpdateVisitorInput }>;
+}) {
+  return useMutation<Visitor, ApiError, { id: string; data: UpdateVisitorInput }>({
+    mutationFn: (vars) =>
+      request(`/api/visitors/${vars.id}`, { method: "PUT", body: JSON.stringify(vars.data) }),
     ...options?.mutation,
   });
 }
@@ -391,6 +528,16 @@ export function useGetBlacklist(options?: { query?: Partial<UseQueryOptions<Blac
 export function useAddToBlacklist(options?: { mutation?: UseMutationOptions<BlacklistEntry, ApiError, { data: AddToBlacklistInput }> }) {
   return useMutation<BlacklistEntry, ApiError, { data: AddToBlacklistInput }>({
     mutationFn: (vars) => request("/api/blacklist", { method: "POST", body: JSON.stringify(vars.data) }),
+    ...options?.mutation,
+  });
+}
+
+export function useUpdateBlacklist(options?: {
+  mutation?: UseMutationOptions<BlacklistEntry, ApiError, { id: number; data: AddToBlacklistInput }>;
+}) {
+  return useMutation<BlacklistEntry, ApiError, { id: number; data: AddToBlacklistInput }>({
+    mutationFn: (vars) =>
+      request(`/api/blacklist/${vars.id}`, { method: "PUT", body: JSON.stringify(vars.data) }),
     ...options?.mutation,
   });
 }

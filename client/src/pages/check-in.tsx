@@ -2,20 +2,22 @@ import { useRef, useState, useCallback, useEffect, useMemo, type ChangeEvent } f
 import { useForm } from "react-hook-form";
 import { z } from "zod";
 import { zodResolver } from "@hookform/resolvers/zod";
-import { useCreateVisitor, useGetBlacklist } from "@/lib/api-client";
+import type { IScannerControls } from "@zxing/browser";
+import { useCreateVisitor, useGetBlacklist, useGetSystemSettings, useLookupVisitorsByMobile } from "@/lib/api-client";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Camera, X, Scan, UserCircle, UserRound, CalendarDays, Upload } from "lucide-react";
+import { Camera, X, Scan, UserCircle, UserRound, CalendarDays, Upload, QrCode, Laptop, Plus, Trash2 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { useLocation } from "wouter";
 import { motion } from "framer-motion";
 
 const checkInSchema = z.object({
   name: z.string().min(2, "Name is required"),
-  mobile: z.string().min(10, "Valid mobile required"),
+  mobile: z.string().regex(/^\d{10}$/, "Mobile number must be exactly 10 digits"),
   email: z.string().email().optional().or(z.literal("")),
   purpose: z.string().min(2, "Purpose required"),
   personToMeet: z.string().min(2, "Host name required"),
@@ -25,6 +27,40 @@ const checkInSchema = z.object({
 });
 
 type CheckInForm = z.infer<typeof checkInSchema>;
+type GadgetForm = { name: string; makeModel: string; serialNumber: string };
+
+function compressPhoto(source: CanvasImageSource, width: number, height: number): Promise<string> {
+  if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
+    return Promise.reject(new Error("The selected photo has invalid dimensions."));
+  }
+
+  const maxDimension = 1280;
+  const scale = Math.min(1, maxDimension / Math.max(width, height));
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.round(width * scale);
+  canvas.height = Math.round(height * scale);
+
+  const context = canvas.getContext("2d");
+  if (!context) return Promise.reject(new Error("Unable to process the selected photo."));
+  context.drawImage(source, 0, 0, canvas.width, canvas.height);
+
+  return new Promise((resolve, reject) => {
+    canvas.toBlob((blob) => {
+      if (!blob) {
+        reject(new Error("Unable to process the selected photo."));
+        return;
+      }
+
+      const reader = new FileReader();
+      reader.onload = () => {
+        if (typeof reader.result === "string") resolve(reader.result);
+        else reject(new Error("Unable to read the processed photo."));
+      };
+      reader.onerror = () => reject(new Error("Unable to read the processed photo."));
+      reader.readAsDataURL(blob);
+    }, "image/jpeg", 0.8);
+  });
+}
 
 export default function CheckIn() {
   const { toast } = useToast();
@@ -32,13 +68,20 @@ export default function CheckIn() {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const scannerVideoRef = useRef<HTMLVideoElement>(null);
+  const scannerControlsRef = useRef<IScannerControls | null>(null);
   const [stream, setStream] = useState<MediaStream | null>(null);
   const [capturedPhoto, setCapturedPhoto] = useState<string | null>(null);
   const [previewPhoto, setPreviewPhoto] = useState<string | null>(null);
   const [webcamError, setWebcamError] = useState<string | null>(null);
+  const [qrScanOpen, setQrScanOpen] = useState(false);
+  const [qrScanError, setQrScanError] = useState<string | null>(null);
+  const [gadgets, setGadgets] = useState<GadgetForm[]>([]);
+  const [lookupMobile, setLookupMobile] = useState("");
 
   const form = useForm<CheckInForm>({
     resolver: zodResolver(checkInSchema),
+    mode: "onBlur",
     defaultValues: {
       name: "",
       mobile: "",
@@ -52,9 +95,27 @@ export default function CheckIn() {
   });
 
   const { data: blacklistEntries } = useGetBlacklist();
+  const { data: systemSettings } = useGetSystemSettings();
 
   const watchedName = form.watch("name");
   const watchedMobile = form.watch("mobile");
+
+  useEffect(() => {
+    if (!/^\d{10}$/.test(watchedMobile)) {
+      setLookupMobile("");
+      return;
+    }
+    const timeout = window.setTimeout(() => setLookupMobile(watchedMobile), 350);
+    return () => window.clearTimeout(timeout);
+  }, [watchedMobile]);
+
+  const {
+    data: repeatVisitors,
+    isLoading: repeatVisitorsLoading,
+    isError: repeatVisitorsError,
+  } = useLookupVisitorsByMobile(lookupMobile, {
+    query: { enabled: /^\d{10}$/.test(lookupMobile) && lookupMobile === watchedMobile },
+  });
 
   const blacklistWarning = useMemo(() => {
     if (!blacklistEntries || (!watchedName && !watchedMobile)) return null;
@@ -78,7 +139,7 @@ export default function CheckIn() {
   const createVisitorMutation = useCreateVisitor({
     mutation: {
       onSuccess: (data) => {
-        toast({ title: "Registration Successful", description: "Visitor ID: " + data.visitorId });
+        toast({ title: "Visitor Checked In", description: "Visitor ID: " + data.visitorId });
         setLocation(`/visitor/${data.id}`);
       },
       onError: (err) => {
@@ -86,6 +147,18 @@ export default function CheckIn() {
       }
     }
   });
+
+  const reuseVisitorDetails = (match: NonNullable<typeof repeatVisitors>[number]) => {
+    form.setValue("name", match.name, { shouldDirty: true, shouldValidate: true });
+    form.setValue("email", match.email ?? "", { shouldDirty: true, shouldValidate: true });
+    form.setValue("personToMeet", match.personToMeet, { shouldDirty: true, shouldValidate: true });
+    form.setValue("idProofType", match.idProofType, { shouldDirty: true, shouldValidate: true });
+    form.setValue("idNumber", match.idNumber, { shouldDirty: true, shouldValidate: true });
+    toast({
+      title: "Previous details loaded",
+      description: "Review the visitor details, enter this visit's purpose, and capture a fresh photo if required.",
+    });
+  };
 
   const startWebcam = async () => {
     try {
@@ -115,6 +188,52 @@ export default function CheckIn() {
     return () => stopWebcam();
   }, [stream, stopWebcam]);
 
+  useEffect(() => {
+    if (!qrScanOpen || !scannerVideoRef.current) return;
+
+    let active = true;
+    void import("@zxing/browser")
+      .then(({ BrowserQRCodeReader }) => {
+        if (!active || !scannerVideoRef.current) return undefined;
+        const reader = new BrowserQRCodeReader();
+        return reader.decodeFromVideoDevice(undefined, scannerVideoRef.current, (result, _error, controls) => {
+          if (!active || !result) return;
+
+          controls.stop();
+          scannerControlsRef.current = null;
+          try {
+            const scannedUrl = new URL(result.getText(), window.location.origin);
+            const visitorRoute = scannedUrl.pathname.match(/\/visitor\/([^/]+)\/?$/);
+            if (scannedUrl.origin !== window.location.origin || !visitorRoute) {
+              setQrScanError("This QR code is not a visitor pass for this system.");
+              return;
+            }
+
+            setQrScanOpen(false);
+            setLocation(`/visitor/${encodeURIComponent(visitorRoute[1])}`);
+          } catch {
+            setQrScanError("The QR code does not contain a valid visitor pass.");
+          }
+        });
+      })
+      .then((controls) => {
+        if (!controls) return;
+        if (active) scannerControlsRef.current = controls;
+        else controls.stop();
+      })
+      .catch((error: unknown) => {
+        if (active) {
+          setQrScanError(error instanceof Error ? error.message : "Unable to start the QR scanner.");
+        }
+      });
+
+    return () => {
+      active = false;
+      scannerControlsRef.current?.stop();
+      scannerControlsRef.current = null;
+    };
+  }, [qrScanOpen, setLocation]);
+
   const capturePhoto = () => {
     if (videoRef.current && canvasRef.current) {
       const video = videoRef.current;
@@ -128,10 +247,17 @@ export default function CheckIn() {
         ctx.scale(-1, 1);
         ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
         ctx.restore();
-        const dataUrl = canvas.toDataURL("image/jpeg");
-        setPreviewPhoto(dataUrl);
-        setCapturedPhoto(null);
-        form.setValue("photoUrl", "");
+        void compressPhoto(canvas, canvas.width, canvas.height).then((dataUrl) => {
+          setPreviewPhoto(dataUrl);
+          setCapturedPhoto(null);
+          form.setValue("photoUrl", "");
+        }).catch((error: unknown) => {
+          toast({
+            title: "Photo Processing Failed",
+            description: error instanceof Error ? error.message : "Unable to process the selected photo.",
+            variant: "destructive",
+          });
+        });
       }
     }
   };
@@ -160,37 +286,83 @@ export default function CheckIn() {
     const file = event.target.files?.[0];
     if (!file) return;
 
-    const reader = new FileReader();
-    reader.onload = () => {
-      const dataUrl = reader.result as string;
-      setPreviewPhoto(dataUrl);
-      setCapturedPhoto(null);
-      form.setValue("photoUrl", "");
+    const imageUrl = URL.createObjectURL(file);
+    const image = new Image();
+    image.onload = () => {
+      void compressPhoto(image, image.naturalWidth, image.naturalHeight).then((dataUrl) => {
+        setPreviewPhoto(dataUrl);
+        setCapturedPhoto(null);
+        form.setValue("photoUrl", "");
+      }).catch((error: unknown) => {
+        toast({
+          title: "Photo Processing Failed",
+          description: error instanceof Error ? error.message : "Unable to process the selected photo.",
+          variant: "destructive",
+        });
+      }).finally(() => URL.revokeObjectURL(imageUrl));
     };
-    reader.readAsDataURL(file);
+    image.onerror = () => {
+      URL.revokeObjectURL(imageUrl);
+      toast({
+        title: "Photo Upload Failed",
+        description: "The selected file could not be opened as an image.",
+        variant: "destructive",
+      });
+    };
+    image.src = imageUrl;
+    event.target.value = "";
   };
 
   const onSubmit = (data: CheckInForm) => {
-    createVisitorMutation.mutate({ data });
+    if (systemSettings?.requirePhoto && !data.photoUrl) {
+      form.setError("photoUrl", { type: "manual", message: "A visitor photo is required by system settings." });
+      toast({
+        title: "Photo Required",
+        description: "Capture or upload a visitor photo before registration.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    const completedGadgets = gadgets.filter((gadget) =>
+      gadget.name.trim() || gadget.makeModel.trim() || gadget.serialNumber.trim(),
+    );
+    if (completedGadgets.some((gadget) => !gadget.name.trim())) {
+      toast({ title: "Gadget name required", description: "Enter a name for every gadget row you have started.", variant: "destructive" });
+      return;
+    }
+
+    createVisitorMutation.mutate({
+      data: {
+        ...data,
+        ...(completedGadgets.length > 0 ? {
+          gadgets: completedGadgets.map((gadget) => ({
+            name: gadget.name.trim(),
+            makeModel: gadget.makeModel.trim() || null,
+            serialNumber: gadget.serialNumber.trim() || null,
+          })),
+        } : {}),
+      },
+    });
   };
 
   return (
-    <div className="w-full space-y-5">
-      <div className="relative isolate flex min-h-28 flex-col justify-between gap-4 overflow-hidden rounded-xl border border-primary/15 bg-gradient-to-r from-sky-50 via-blue-50 to-white p-4 shadow-sm dark:from-slate-900 dark:via-slate-900 dark:to-slate-800 md:min-h-28 md:flex-row md:items-center">
-        <div className="pointer-events-none absolute inset-y-0 right-0 hidden w-[58%] bg-gradient-to-r from-sky-50 via-sky-50/80 to-transparent dark:from-slate-900 dark:via-slate-900/80 md:block" />
-        <div className="relative z-10 flex items-center gap-4">
-          <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl bg-primary text-primary-foreground shadow-md">
-            <Scan className="h-8 w-8" />
+    <div className="mx-auto w-full max-w-[1180px] space-y-4">
+      <div className="relative isolate flex min-h-[88px] items-center overflow-hidden rounded-xl border border-primary/15 bg-gradient-to-r from-sky-50 via-blue-50 to-white p-4 shadow-sm dark:from-slate-900 dark:via-slate-900 dark:to-slate-800">
+        <div className="pointer-events-none absolute inset-y-0 right-0 hidden w-[58%] bg-gradient-to-r from-sky-50 via-sky-50/80 to-transparent dark:from-slate-900 dark:via-slate-900/80 sm:block" />
+        <div className="relative z-10 flex max-w-[62%] items-center gap-3">
+          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-primary text-primary-foreground shadow-sm">
+            <Scan className="h-5 w-5" />
           </div>
           <div>
-            <h1 className="text-xl font-bold tracking-tight text-foreground sm:text-2xl lg:text-3xl">New Visitor Registration</h1>
-            <p className="mt-1 text-sm text-muted-foreground sm:text-base">Capture details and issue security clearance.</p>
+            <h1 className="text-lg font-bold tracking-tight text-foreground sm:text-xl">New Visitor Registration</h1>
+            <p className="mt-0.5 text-xs text-muted-foreground sm:text-sm">Capture visitor details and check them in.</p>
           </div>
         </div>
         <motion.img
-          src="/check-in-illustration.png"
-          alt="A visitor checking in at a reception desk"
-          className="h-28 w-full rounded-lg object-contain object-center md:absolute md:inset-y-0 md:right-0 md:h-full md:w-[38%] md:px-2 md:py-1 md:rounded-none"
+          src="/flexible-visitor-registration.png"
+          alt="Flexible visitor registration"
+          className="absolute inset-y-0 right-0 h-full w-[38%] object-contain object-right"
           initial={{ opacity: 0, x: 24 }}
           animate={{ opacity: 1, x: 0 }}
           transition={{ duration: 0.6, ease: "easeOut" }}
@@ -198,43 +370,74 @@ export default function CheckIn() {
       </div>
 
       <Form {...form}>
-        <form onSubmit={form.handleSubmit(onSubmit)} className="grid grid-cols-1 gap-5 lg:grid-cols-12">
+        <form onSubmit={form.handleSubmit(onSubmit)} className="grid grid-cols-1 items-start gap-4 lg:grid-cols-[minmax(0,2fr)_300px]">
           {blacklistWarning && (
-            <div className="rounded-lg border border-destructive/40 bg-destructive/10 p-4 text-sm text-destructive lg:col-span-12">
+            <div className="rounded-lg border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive lg:col-span-2">
               <div className="font-semibold">Security warning</div>
               <div>This person matches the blacklist entry for <span className="font-medium">{blacklistWarning.name}</span>.</div>
               <div className="mt-1">Reason: {blacklistWarning.reason}</div>
             </div>
           )}
           
-          <div className="space-y-5 lg:col-span-8">
+          <div className="space-y-3 lg:col-span-1">
             <Card className="border-primary/10 shadow-sm">
-              <CardHeader className="pb-4">
-                <CardTitle className="flex items-center gap-3 text-lg">
-                  <span className="flex h-9 w-9 items-center justify-center rounded-full bg-primary text-primary-foreground"><UserRound className="h-5 w-5" /></span>
+              <CardHeader className="space-y-2 p-4 pb-3">
+                <CardTitle className="flex items-center gap-2.5 text-base">
+                  <span className="flex h-[30px] w-[30px] items-center justify-center rounded-full bg-primary text-primary-foreground"><UserRound className="h-4 w-4" /></span>
                   Personal Information
                 </CardTitle>
                 <div className="h-px bg-gradient-to-r from-primary/60 to-primary/10" />
               </CardHeader>
-              <CardContent className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+              <CardContent className="grid grid-cols-1 gap-x-3 gap-y-2 p-4 pt-0 sm:grid-cols-2">
                 <FormField control={form.control} name="name" render={({ field }) => (
-                  <FormItem className="col-span-2 sm:col-span-1">
-                    <FormLabel>Full Name</FormLabel>
-                    <FormControl><Input {...field} className="bg-background border-border" placeholder="John Doe" /></FormControl>
+                  <FormItem className="w-full max-w-[280px] space-y-1">
+                    <FormLabel className="text-[13px] leading-4">Full Name</FormLabel>
+                    <FormControl><Input {...field} className="h-9 bg-background text-sm border-border" placeholder="John Doe" /></FormControl>
                     <FormMessage />
                   </FormItem>
                 )} />
                 <FormField control={form.control} name="mobile" render={({ field }) => (
-                  <FormItem className="col-span-2 sm:col-span-1">
-                    <FormLabel>Mobile Number</FormLabel>
-                    <FormControl><Input {...field} className="bg-background border-border" placeholder="+1..." /></FormControl>
+                  <FormItem className="w-full max-w-[280px] space-y-1">
+                    <FormLabel className="text-[13px] leading-4">Mobile Number</FormLabel>
+                    <FormControl><Input {...field} type="tel" inputMode="numeric" maxLength={10} className="h-9 bg-background text-sm border-border" placeholder="10-digit mobile number" /></FormControl>
                     <FormMessage />
                   </FormItem>
                 )} />
+                {lookupMobile === watchedMobile && /^\d{10}$/.test(watchedMobile) && (
+                  <div className="space-y-2 sm:col-span-2" aria-live="polite">
+                    {repeatVisitorsLoading ? (
+                      <p className="text-xs text-muted-foreground">Checking for previous visitors...</p>
+                    ) : repeatVisitorsError ? (
+                      <p role="alert" className="text-xs text-destructive">Previous visitor lookup failed. You can continue entering details manually.</p>
+                    ) : repeatVisitors?.length ? (
+                      <div className="rounded-md border border-primary/20 bg-primary/5 p-3">
+                        <p className="mb-2 text-sm font-medium">Previous visitor found. Select a record to reuse details:</p>
+                        <div className="space-y-2">
+                          {repeatVisitors.map((match) => (
+                            <div key={match.id} className="flex flex-col gap-2 rounded-md border border-border bg-background p-2 sm:flex-row sm:items-center sm:justify-between">
+                              <div>
+                                <div className="text-sm font-medium">{match.name}</div>
+                                <div className="text-xs text-muted-foreground">
+                                  Previous host: {match.personToMeet} · {new Date(match.createdAt).toLocaleDateString()}
+                                </div>
+                              </div>
+                              <Button type="button" size="sm" variant="outline" onClick={() => reuseVisitorDetails(match)}>
+                                Reuse Details
+                              </Button>
+                            </div>
+                          ))}
+                        </div>
+                        <p className="mt-2 text-xs text-muted-foreground">Purpose and photo are not reused. Review all filled details before registration.</p>
+                      </div>
+                    ) : (
+                      <p className="text-xs text-muted-foreground">No previous visitor found for this mobile number.</p>
+                    )}
+                  </div>
+                )}
                 <FormField control={form.control} name="email" render={({ field }) => (
-                  <FormItem className="col-span-2">
-                    <FormLabel>Email Address (Optional)</FormLabel>
-                    <FormControl><Input {...field} className="bg-background border-border" placeholder="john@example.com" /></FormControl>
+                  <FormItem className="w-full max-w-[280px] space-y-1">
+                    <FormLabel className="text-[13px] leading-4">Email Address (Optional)</FormLabel>
+                    <FormControl><Input {...field} className="h-9 bg-background text-sm border-border" placeholder="john@example.com" /></FormControl>
                     <FormMessage />
                   </FormItem>
                 )} />
@@ -242,25 +445,25 @@ export default function CheckIn() {
             </Card>
 
             <Card className="border-primary/10 shadow-sm">
-              <CardHeader className="pb-4">
-                <CardTitle className="flex items-center gap-3 text-lg">
-                  <span className="flex h-9 w-9 items-center justify-center rounded-full bg-primary text-primary-foreground"><CalendarDays className="h-5 w-5" /></span>
+              <CardHeader className="space-y-2 p-4 pb-3">
+                <CardTitle className="flex items-center gap-2.5 text-base">
+                  <span className="flex h-[30px] w-[30px] items-center justify-center rounded-full bg-primary text-primary-foreground"><CalendarDays className="h-4 w-4" /></span>
                   Visit Details
                 </CardTitle>
                 <div className="h-px bg-gradient-to-r from-primary/60 to-primary/10" />
               </CardHeader>
-              <CardContent className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+              <CardContent className="grid grid-cols-1 gap-x-3 gap-y-2 p-4 pt-0 sm:grid-cols-2">
                 <FormField control={form.control} name="personToMeet" render={({ field }) => (
-                  <FormItem className="col-span-2 sm:col-span-1">
-                    <FormLabel>Host / Person to Meet</FormLabel>
-                    <FormControl><Input {...field} className="bg-background border-border" placeholder="Jane Smith" /></FormControl>
+                  <FormItem className="w-full max-w-[280px] space-y-1">
+                    <FormLabel className="text-[13px] leading-4">Host / Person to Meet</FormLabel>
+                    <FormControl><Input {...field} className="h-9 bg-background text-sm border-border" placeholder="Jane Smith" /></FormControl>
                     <FormMessage />
                   </FormItem>
                 )} />
                 <FormField control={form.control} name="purpose" render={({ field }) => (
-                  <FormItem className="col-span-2 sm:col-span-1">
-                    <FormLabel>Purpose of Visit</FormLabel>
-                    <FormControl><Input {...field} className="bg-background border-border" placeholder="Meeting, Interview..." /></FormControl>
+                  <FormItem className="w-full max-w-[280px] space-y-1">
+                    <FormLabel className="text-[13px] leading-4">Purpose of Visit</FormLabel>
+                    <FormControl><Input {...field} className="h-9 bg-background text-sm border-border" placeholder="Meeting, Interview..." /></FormControl>
                     <FormMessage />
                   </FormItem>
                 )} />
@@ -268,20 +471,20 @@ export default function CheckIn() {
             </Card>
 
             <Card className="border-primary/10 shadow-sm">
-              <CardHeader className="pb-4">
-                <CardTitle className="flex items-center gap-3 text-lg">
-                  <span className="flex h-9 w-9 items-center justify-center rounded-full bg-primary text-primary-foreground"><Scan className="h-5 w-5" /></span>
+              <CardHeader className="space-y-2 p-4 pb-3">
+                <CardTitle className="flex items-center gap-2.5 text-base">
+                  <span className="flex h-[30px] w-[30px] items-center justify-center rounded-full bg-primary text-primary-foreground"><Scan className="h-4 w-4" /></span>
                   Identity Verification
                 </CardTitle>
                 <div className="h-px bg-gradient-to-r from-primary/60 to-primary/10" />
               </CardHeader>
-              <CardContent className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+              <CardContent className="grid grid-cols-1 gap-x-3 gap-y-2 p-4 pt-0 sm:grid-cols-2">
                 <FormField control={form.control} name="idProofType" render={({ field }) => (
-                  <FormItem className="col-span-2 sm:col-span-1">
-                    <FormLabel>ID Type</FormLabel>
-                    <Select onValueChange={field.onChange} defaultValue={field.value}>
+                  <FormItem className="w-full max-w-[280px] space-y-1">
+                    <FormLabel className="text-[13px] leading-4">ID Type</FormLabel>
+                    <Select onValueChange={field.onChange} value={field.value}>
                       <FormControl>
-                        <SelectTrigger className="bg-background border-border">
+                        <SelectTrigger className="h-9 bg-background text-sm border-border">
                           <SelectValue placeholder="Select ID type" />
                         </SelectTrigger>
                       </FormControl>
@@ -297,31 +500,80 @@ export default function CheckIn() {
                   </FormItem>
                 )} />
                 <FormField control={form.control} name="idNumber" render={({ field }) => (
-                  <FormItem className="col-span-2 sm:col-span-1">
-                    <FormLabel>ID Number</FormLabel>
-                    <FormControl><Input {...field} className="bg-background border-border uppercase font-mono" placeholder="XXXX-XXXX" /></FormControl>
+                  <FormItem className="w-full max-w-[280px] space-y-1">
+                    <FormLabel className="text-[13px] leading-4">ID Number</FormLabel>
+                    <FormControl><Input {...field} className="h-9 bg-background text-sm border-border uppercase font-mono" placeholder="XXXX-XXXX" /></FormControl>
                     <FormMessage />
                   </FormItem>
                 )} />
               </CardContent>
             </Card>
+
+            <Card className="border-primary/10 shadow-sm">
+              <CardHeader className="space-y-2 p-4 pb-3">
+                <CardTitle className="flex items-center gap-2.5 text-base">
+                  <span className="flex h-[30px] w-[30px] items-center justify-center rounded-full bg-primary text-primary-foreground"><Laptop className="h-4 w-4" /></span>
+                  Gadgets Carried Inside (Optional)
+                </CardTitle>
+                <p className="text-xs text-muted-foreground">List each gadget separately. Items remain pending until admin/security review.</p>
+                <div className="h-px bg-gradient-to-r from-primary/60 to-primary/10" />
+              </CardHeader>
+              <CardContent className="space-y-3 p-4 pt-0">
+                {gadgets.map((gadget, index) => (
+                  <div key={index} className="grid gap-2 rounded-md border border-border p-3 sm:grid-cols-[1fr_1fr_1fr_auto]">
+                    <Input
+                      aria-label={`Gadget ${index + 1} name`}
+                      className="h-9 text-sm"
+                      placeholder="Gadget name (required)"
+                      maxLength={150}
+                      value={gadget.name}
+                      onChange={(event) => setGadgets((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, name: event.target.value } : item))}
+                    />
+                    <Input
+                      aria-label={`Gadget ${index + 1} make/model`}
+                      className="h-9 text-sm"
+                      placeholder="Make / model"
+                      maxLength={150}
+                      value={gadget.makeModel}
+                      onChange={(event) => setGadgets((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, makeModel: event.target.value } : item))}
+                    />
+                    <Input
+                      aria-label={`Gadget ${index + 1} serial number`}
+                      className="h-9 text-sm"
+                      placeholder="Serial number"
+                      maxLength={150}
+                      value={gadget.serialNumber}
+                      onChange={(event) => setGadgets((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, serialNumber: event.target.value } : item))}
+                    />
+                    <Button type="button" variant="ghost" size="icon" aria-label={`Remove gadget ${index + 1}`} onClick={() => setGadgets((current) => current.filter((_, itemIndex) => itemIndex !== index))}>
+                      <Trash2 className="h-4 w-4" />
+                    </Button>
+                  </div>
+                ))}
+                {gadgets.length < 25 && (
+                  <Button type="button" variant="outline" size="sm" onClick={() => setGadgets((current) => [...current, { name: "", makeModel: "", serialNumber: "" }])}>
+                    <Plus className="mr-2 h-4 w-4" /> Add Gadget
+                  </Button>
+                )}
+              </CardContent>
+            </Card>
           </div>
 
-          <div className="space-y-5 lg:col-span-4">
+          <div className="space-y-3 lg:col-span-1">
             <Card className="border-primary/10 shadow-sm">
-              <CardHeader className="pb-4">
-                <CardTitle className="flex items-center gap-3 text-lg">
-                  <span className="flex h-9 w-9 items-center justify-center rounded-full bg-primary text-primary-foreground"><Camera className="h-5 w-5" /></span>
+              <CardHeader className="space-y-2 p-4 pb-3">
+                <CardTitle className="flex items-center gap-2.5 text-base">
+                  <span className="flex h-[30px] w-[30px] items-center justify-center rounded-full bg-primary text-primary-foreground"><Camera className="h-4 w-4" /></span>
                   Photo Capture
                 </CardTitle>
                 <div className="h-px bg-gradient-to-r from-primary/60 to-primary/10" />
               </CardHeader>
-              <CardContent className="flex flex-col space-y-4">
-                <div className="relative flex aspect-[4/3] w-full items-center justify-center overflow-hidden rounded-lg border border-dashed border-primary/40 bg-gradient-to-br from-sky-50 to-blue-100/50 dark:from-slate-900 dark:to-slate-800">
+              <CardContent className="flex flex-col space-y-3 p-4 pt-0">
+                <div className="relative mx-auto flex h-[200px] w-full items-center justify-center overflow-hidden rounded-lg border border-dashed border-primary/40 bg-gradient-to-br from-sky-50 to-blue-100/50 dark:from-slate-900 dark:to-slate-800">
                   {capturedPhoto ? (
                     <>
                       <img src={capturedPhoto} alt="Captured" className="w-full h-full object-cover" />
-                      <Button variant="destructive" size="icon" className="absolute top-2 right-2 rounded-full h-8 w-8" onClick={clearPhoto}>
+                      <Button type="button" variant="destructive" size="icon" className="absolute top-2 right-2 rounded-full h-8 w-8" onClick={clearPhoto}>
                         <X className="h-4 w-4" />
                       </Button>
                     </>
@@ -330,25 +582,25 @@ export default function CheckIn() {
                       <img src={previewPhoto} alt="Preview" className="w-full h-full object-cover" />
                       <div className="absolute inset-x-0 bottom-0 p-3 bg-black/60 backdrop-blur-sm">
                         <div className="flex justify-center gap-2">
-                          <Button variant="secondary" onClick={confirmPhoto}>Use This</Button>
-                          <Button variant="outline" className="bg-white/90 text-black hover:bg-white" onClick={retakePhoto}>Retake</Button>
+                          <Button type="button" size="sm" variant="secondary" onClick={confirmPhoto}>Use This</Button>
+                          <Button type="button" size="sm" variant="outline" className="bg-white/90 text-black hover:bg-white" onClick={retakePhoto}>Retake</Button>
                         </div>
                       </div>
                     </>
                   ) : stream ? (
                     <>
                       <video ref={videoRef} autoPlay playsInline muted className="w-full h-full object-cover transform scale-x-[-1]" />
-                      <div className="absolute inset-x-0 bottom-0 p-4 bg-gradient-to-t from-black/80 to-transparent">
+                      <div className="absolute inset-x-0 bottom-0 p-3 bg-gradient-to-t from-black/80 to-transparent">
                         <div className="flex justify-center">
-                          <Button variant="secondary" size="icon" className="h-14 w-14 rounded-full border-4 border-white/80 bg-white text-black shadow-lg" onClick={capturePhoto}>
-                            <Camera className="h-6 w-6" />
+                        <Button type="button" variant="secondary" size="icon" className="h-11 w-11 rounded-full border-2 border-white/80 bg-white text-black shadow-lg" onClick={capturePhoto}>
+                          <Camera className="h-5 w-5" />
                           </Button>
                         </div>
                       </div>
                     </>
                   ) : (
                     <div className="flex flex-col items-center p-4 text-center">
-                      <UserCircle className="mb-3 h-16 w-16 text-primary/40" />
+                      <UserCircle className="mb-2 h-12 w-12 text-primary/40" />
                       {webcamError ? (
                         <p className="text-xs text-destructive">{webcamError}</p>
                       ) : (
@@ -363,33 +615,61 @@ export default function CheckIn() {
                   OR
                 </div>
                 <div className="flex w-full gap-2">
-                  <Button type="button" variant="outline" className="flex-1 border-primary/25" onClick={() => fileInputRef.current?.click()}>
+                  <Button type="button" size="sm" variant="outline" className="h-9 flex-1 border-primary/25" onClick={() => fileInputRef.current?.click()}>
                     <Upload className="mr-2 h-4 w-4" />Upload Photo
                   </Button>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    className="h-9 flex-1"
+                    onClick={() => {
+                      setQrScanError(null);
+                      setQrScanOpen(true);
+                    }}
+                  >
+                    <QrCode className="mr-2 h-4 w-4" />Scan Pass
+                  </Button>
                   {(capturedPhoto || previewPhoto) && (
-                    <Button type="button" variant="ghost" onClick={clearPhoto}>Remove</Button>
+                    <Button type="button" size="sm" variant="ghost" onClick={clearPhoto}>Remove</Button>
                   )}
                 </div>
                 <input ref={fileInputRef} type="file" accept="image/*" className="hidden" onChange={handlePhotoUpload} />
-                <p className="rounded-lg border border-primary/15 bg-primary/5 p-3 text-xs leading-relaxed text-muted-foreground">Capture a photo, then choose Use This or Retake. If the camera is blocked, upload a photo instead.</p>
+                <p className="rounded-lg border border-primary/15 bg-primary/5 p-2.5 text-xs leading-relaxed text-muted-foreground">Capture a photo, then choose Use This or Retake. If the camera is blocked, upload a photo instead.</p>
 
                 <FormField control={form.control} name="photoUrl" render={({ field }) => (
-                  <FormItem className="w-full">
-                    <FormLabel className="text-xs text-muted-foreground">Or Manual Photo URL</FormLabel>
-                    <FormControl><Input {...field} className="bg-background text-xs" placeholder="https://..." disabled={!!capturedPhoto || !!previewPhoto || !!stream} /></FormControl>
+                  <FormItem className="w-full space-y-1">
+                    <FormLabel className="text-[13px] leading-4 text-muted-foreground">Or Manual Photo URL</FormLabel>
+                    <FormControl><Input {...field} className="h-9 bg-background text-sm" placeholder="https://..." disabled={!!capturedPhoto || !!previewPhoto || !!stream} /></FormControl>
                     <FormMessage />
                   </FormItem>
                 )} />
               </CardContent>
             </Card>
 
-            <Button type="submit" className="w-full h-12 text-lg font-bold tracking-wider" disabled={createVisitorMutation.isPending}>
+            <Button type="submit" className="h-10 w-full text-sm font-semibold tracking-wide" disabled={createVisitorMutation.isPending}>
               {createVisitorMutation.isPending ? "REGISTERING..." : blacklistWarning ? "REGISTER BLACKLISTED VISITOR" : "REGISTER VISITOR"}
             </Button>
           </div>
 
         </form>
       </Form>
+      <Dialog open={qrScanOpen} onOpenChange={setQrScanOpen}>
+        <DialogContent className="border-border bg-card sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Scan Visitor Pass</DialogTitle>
+          </DialogHeader>
+          <video
+            ref={scannerVideoRef}
+            autoPlay
+            playsInline
+            muted
+            className="aspect-video w-full rounded-lg bg-black object-cover"
+          />
+          <p className="text-sm text-muted-foreground">Point the camera at a visitor pass QR code to open its check-in or check-out profile.</p>
+          {qrScanError && <p role="alert" className="text-sm text-destructive">{qrScanError}</p>}
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

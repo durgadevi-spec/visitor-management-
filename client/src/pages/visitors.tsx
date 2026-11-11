@@ -62,7 +62,7 @@ export default function Visitors() {
           <div className="relative flex-1">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
             <Input 
-              placeholder="Search by name, ID, or host..." 
+              placeholder="Search by name, ID, host, or purpose..." 
               className="pl-9 bg-background border-border"
               value={search}
               onChange={(e) => setSearch(e.target.value)}

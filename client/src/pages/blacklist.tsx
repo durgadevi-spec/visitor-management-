@@ -3,13 +3,14 @@ import {
   useGetBlacklist, 
   getGetBlacklistQueryKey,
   useAddToBlacklist,
+  useUpdateBlacklist,
   useRemoveFromBlacklist
 } from "@/lib/api-client";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { ShieldAlert, Trash2, Search, PlusCircle, UserRoundX } from "lucide-react";
+import { ShieldAlert, Trash2, Search, PlusCircle, UserRoundX, Pencil } from "lucide-react";
 import { format } from "date-fns";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useQueryClient } from "@tanstack/react-query";
@@ -23,7 +24,7 @@ import { motion, useReducedMotion } from "framer-motion";
 
 const blacklistSchema = z.object({
   name: z.string().min(2, "Name required"),
-  mobile: z.string().min(10, "Mobile required"),
+  mobile: z.string().regex(/^\d{10}$/, "Mobile number must be exactly 10 digits"),
   reason: z.string().min(5, "Reason required")
 });
 
@@ -31,6 +32,7 @@ export default function Blacklist() {
   const reduceMotion = useReducedMotion();
   const [search, setSearch] = useState("");
   const [open, setOpen] = useState(false);
+  const [editingEntry, setEditingEntry] = useState<{ id: number; name: string; mobile: string; reason: string } | null>(null);
   const queryClient = useQueryClient();
   const { toast } = useToast();
 
@@ -42,6 +44,13 @@ export default function Blacklist() {
 
   const form = useForm<z.infer<typeof blacklistSchema>>({
     resolver: zodResolver(blacklistSchema),
+    mode: "onBlur",
+    defaultValues: { name: "", mobile: "", reason: "" }
+  });
+
+  const editForm = useForm<z.infer<typeof blacklistSchema>>({
+    resolver: zodResolver(blacklistSchema),
+    mode: "onBlur",
     defaultValues: { name: "", mobile: "", reason: "" }
   });
 
@@ -65,6 +74,19 @@ export default function Blacklist() {
     }
   });
 
+  const updateMutation = useUpdateBlacklist({
+    mutation: {
+      onSuccess: () => {
+        toast({ title: "Watchlist Entry Updated", description: "Restriction details have been saved." });
+        queryClient.invalidateQueries({ queryKey: getGetBlacklistQueryKey() });
+        setEditingEntry(null);
+      },
+      onError: (error) => {
+        toast({ title: "Update Failed", description: error.error, variant: "destructive" });
+      },
+    },
+  });
+
   const filteredList = blacklist?.filter(entry => 
     entry.name.toLowerCase().includes(search.toLowerCase()) || 
     entry.mobile.includes(search)
@@ -72,6 +94,15 @@ export default function Blacklist() {
 
   const onSubmit = (data: z.infer<typeof blacklistSchema>) => {
     addMutation.mutate({ data });
+  };
+
+  const openEditDialog = (entry: { id: number; name: string; mobile: string; reason: string }) => {
+    setEditingEntry(entry);
+    editForm.reset({ name: entry.name, mobile: entry.mobile, reason: entry.reason });
+  };
+
+  const onEditSubmit = (data: z.infer<typeof blacklistSchema>) => {
+    if (editingEntry) updateMutation.mutate({ id: editingEntry.id, data });
   };
 
   const handleRemove = (id: number) => {
@@ -201,9 +232,14 @@ export default function Blacklist() {
                     <TableCell className="text-sm">{entry.addedBy}</TableCell>
                     <TableCell className="text-sm">{format(new Date(entry.createdAt), "MMM d, yyyy")}</TableCell>
                     <TableCell className="text-right">
-                      <Button variant="ghost" size="icon" onClick={() => handleRemove(entry.id)} className="text-muted-foreground hover:text-foreground">
-                        <Trash2 className="h-4 w-4" />
-                      </Button>
+                      <div className="flex justify-end gap-1">
+                        <Button variant="ghost" size="icon" aria-label={`Edit ${entry.name}`} onClick={() => openEditDialog(entry)} className="text-muted-foreground hover:text-foreground">
+                          <Pencil className="h-4 w-4" />
+                        </Button>
+                        <Button variant="ghost" size="icon" aria-label={`Remove ${entry.name}`} onClick={() => handleRemove(entry.id)} className="text-muted-foreground hover:text-foreground">
+                          <Trash2 className="h-4 w-4" />
+                        </Button>
+                      </div>
                     </TableCell>
                   </TableRow>
                 ))
@@ -212,6 +248,41 @@ export default function Blacklist() {
           </Table>
         </CardContent>
       </Card>
+      <Dialog open={!!editingEntry} onOpenChange={(isOpen) => { if (!isOpen) setEditingEntry(null); }}>
+        <DialogContent className="border-border bg-card sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Edit Watchlist Entry</DialogTitle>
+          </DialogHeader>
+          <Form {...editForm}>
+            <form onSubmit={editForm.handleSubmit(onEditSubmit)} className="space-y-4">
+              <FormField control={editForm.control} name="name" render={({ field }) => (
+                <FormItem>
+                  <FormLabel>Full Name</FormLabel>
+                  <FormControl><Input {...field} className="bg-background" /></FormControl>
+                  <FormMessage />
+                </FormItem>
+              )} />
+              <FormField control={editForm.control} name="mobile" render={({ field }) => (
+                <FormItem>
+                  <FormLabel>Mobile / ID</FormLabel>
+                  <FormControl><Input {...field} className="bg-background" /></FormControl>
+                  <FormMessage />
+                </FormItem>
+              )} />
+              <FormField control={editForm.control} name="reason" render={({ field }) => (
+                <FormItem>
+                  <FormLabel>Reason for Restriction</FormLabel>
+                  <FormControl><Input {...field} className="bg-background" /></FormControl>
+                  <FormMessage />
+                </FormItem>
+              )} />
+              <Button type="submit" className="w-full" disabled={updateMutation.isPending}>
+                {updateMutation.isPending ? "Saving..." : "Save Changes"}
+              </Button>
+            </form>
+          </Form>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

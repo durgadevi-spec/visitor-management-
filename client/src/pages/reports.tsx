@@ -1,6 +1,13 @@
 import { useMemo, useState } from "react";
 import { jsPDF } from "jspdf";
-import { useGetReports, getGetReportsQueryKey, useGetVisitors, type Visitor } from "@/lib/api-client";
+import {
+  useGetReports,
+  getGetReportsQueryKey,
+  useGetVisitors,
+  useGetAllVisitorGadgets,
+  type Visitor,
+  type VisitorGadget,
+} from "@/lib/api-client";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -13,7 +20,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 
 type SortField = "createdAt" | "name" | "status" | "personToMeet" | "purpose";
 
-const formatVisitorDate = (date: string) => new Date(date).toLocaleString();
+const formatVisitorDate = (date: string | null) => date ? new Date(date).toLocaleString() : "";
 const getVisitorDateKey = (date: string) => new Date(date).toISOString().slice(0, 10);
 
 function csvCell(value: string) {
@@ -21,15 +28,55 @@ function csvCell(value: string) {
   return `"${safeValue.replace(/"/g, '""')}"`;
 }
 
-function downloadVisitorCsv(visitors: Visitor[]) {
-  const headers = ["Visitor ID", "Name", "Host", "Purpose", "Registered", "Status"];
+function formatGadgetReport(gadgets: VisitorGadget[]) {
+  if (gadgets.length === 0) return "None recorded";
+  return gadgets.map((gadget) => [
+    gadget.name,
+    gadget.makeModel ? `Make/model: ${gadget.makeModel}` : null,
+    gadget.serialNumber ? `Serial: ${gadget.serialNumber}` : null,
+    `Approval: ${gadget.approvalStatus}`,
+    gadget.returnedAt
+      ? `Returned: Yes (${formatVisitorDate(gadget.returnedAt)})`
+      : "Returned: No",
+  ].filter(Boolean).join(" | ")).join("\n");
+}
+
+function downloadVisitorCsv(visitors: Visitor[], gadgetsByVisitor: Map<string, VisitorGadget[]>) {
+  const headers = [
+    "Visitor ID",
+    "Name",
+    "Mobile",
+    "Email",
+    "Host",
+    "Purpose",
+    "ID Proof Type",
+    "ID Number",
+    "Registered",
+    "Check-in Time",
+    "Check-out Time",
+    "Duration",
+    "Status",
+    "Blacklisted",
+    "Remarks",
+    "Gadgets",
+  ];
   const rows = visitors.map((visitor) => [
     visitor.visitorId,
     visitor.name,
+    visitor.mobile,
+    visitor.email ?? "",
     visitor.personToMeet,
     visitor.purpose,
+    visitor.idProofType.replace("_", " "),
+    visitor.idNumber,
     formatVisitorDate(visitor.createdAt),
+    formatVisitorDate(visitor.checkIn),
+    formatVisitorDate(visitor.checkOut),
+    visitor.duration ?? "",
     visitor.status.replace("_", " "),
+    visitor.isBlacklisted ? "Yes" : "No",
+    visitor.remarks ?? "",
+    formatGadgetReport(gadgetsByVisitor.get(visitor.id) ?? []),
   ]);
   const csv = [headers, ...rows].map((row) => row.map(csvCell).join(",")).join("\r\n");
   const url = URL.createObjectURL(new Blob(["\uFEFF", csv], { type: "text/csv;charset=utf-8" }));
@@ -40,18 +87,15 @@ function downloadVisitorCsv(visitors: Visitor[]) {
   URL.revokeObjectURL(url);
 }
 
-function downloadVisitorPdf(visitors: Visitor[], period: string, startDate: string, endDate: string) {
+function downloadVisitorPdf(visitors: Visitor[], gadgetsByVisitor: Map<string, VisitorGadget[]>, period: string, startDate: string, endDate: string) {
   const doc = new jsPDF({ orientation: "landscape", unit: "mm", format: "a4" });
   const margin = 12;
-  const columns = [
-    { title: "Visitor ID", width: 35, value: (visitor: Visitor) => visitor.visitorId },
-    { title: "Name", width: 40, value: (visitor: Visitor) => visitor.name },
-    { title: "Host", width: 42, value: (visitor: Visitor) => visitor.personToMeet },
-    { title: "Purpose", width: 64, value: (visitor: Visitor) => visitor.purpose },
-    { title: "Registered", width: 48, value: (visitor: Visitor) => formatVisitorDate(visitor.createdAt) },
-    { title: "Status", width: 32, value: (visitor: Visitor) => visitor.status.replace("_", " ") },
-  ];
-  let y = 16;
+  const pageWidth = doc.internal.pageSize.getWidth();
+  const pageHeight = doc.internal.pageSize.getHeight();
+  const contentWidth = pageWidth - margin * 2;
+  const gap = 8;
+  const columnWidth = (contentWidth - gap) / 2;
+  let y = 14;
 
   doc.setFont("helvetica", "bold");
   doc.setFontSize(16);
@@ -60,43 +104,103 @@ function downloadVisitorPdf(visitors: Visitor[], period: string, startDate: stri
   doc.setFont("helvetica", "normal");
   doc.setFontSize(9);
   doc.text(`Chart period: ${period} | Date range: ${startDate || "Any"} to ${endDate || "Any"} | Visitors: ${visitors.length}`, margin, y);
-  y += 8;
-
-  const drawHeader = () => {
-    let x = margin;
-    doc.setFont("helvetica", "bold");
-    doc.setFontSize(8);
-    doc.setFillColor(232, 240, 248);
-    doc.rect(margin, y - 4, columns.reduce((total, column) => total + column.width, 0), 8, "F");
-    for (const column of columns) {
-      doc.text(column.title, x + 1, y + 1);
-      x += column.width;
-    }
-    doc.setFont("helvetica", "normal");
-    y += 8;
-  };
-  drawHeader();
+  y += 12;
 
   if (visitors.length === 0) {
     doc.text("No visitors match the selected filters.", margin, y + 2);
   } else {
     for (const visitor of visitors) {
-      const cells = columns.map((column) => doc.splitTextToSize(column.value(visitor), column.width - 2) as string[]);
-      const rowHeight = Math.max(1, ...cells.map((lines) => lines.length)) * 4 + 3;
-      if (y + rowHeight > 195) {
+      const details: [string, string][] = [
+        ["Mobile", visitor.mobile],
+        ["Email", visitor.email || "N/A"],
+        ["Host", visitor.personToMeet],
+        ["Purpose", visitor.purpose],
+        ["ID Proof", `${visitor.idProofType.replace("_", " ")}: ${visitor.idNumber}`],
+        ["Registered", formatVisitorDate(visitor.createdAt)],
+        ["Check-in", formatVisitorDate(visitor.checkIn) || "Not checked in"],
+        ["Check-out", formatVisitorDate(visitor.checkOut) || "Not checked out"],
+        ["Duration", visitor.duration || "N/A"],
+        ["Status", visitor.status.replace("_", " ")],
+        ["Blacklisted", visitor.isBlacklisted ? "Yes" : "No"],
+        ["Remarks", visitor.remarks || "None"],
+      ];
+      const visitorGadgets = gadgetsByVisitor.get(visitor.id) ?? [];
+      const detailLines = details.map(([label, value]) => {
+        const lines = doc.splitTextToSize(`${label}: ${value}`, columnWidth - 4) as string[];
+        return { lines, height: Math.max(1, lines.length) * 4 + 2 };
+      });
+      const rows = Math.ceil(detailLines.length / 2);
+      const cardHeight = 17 + detailLines.reduce((height, detail, index) => {
+        return index % 2 === 0
+          ? height + Math.max(detail.height, detailLines[index + 1]?.height ?? 0)
+          : height;
+      }, 0);
+
+      if (y + cardHeight > pageHeight - margin) {
         doc.addPage();
-        y = 16;
-        drawHeader();
+        y = margin;
       }
 
-      let x = margin;
-      cells.forEach((lines, index) => {
-        doc.text(lines, x + 1, y + 3);
-        x += columns[index].width;
+      doc.setFillColor(232, 240, 248);
+      doc.rect(margin, y, contentWidth, 8, "F");
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(10);
+      doc.text(`${visitor.name}  |  ${visitor.visitorId}`, margin + 2, y + 5.5);
+      y += 12;
+
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(8);
+      detailLines.forEach(({ lines, height }, index) => {
+        const column = index % 2;
+        if (column === 0 && index > 0) {
+          y += Math.max(detailLines[index - 1].height, height);
+        }
+        doc.text(lines, margin + column * (columnWidth + gap) + 2, y);
       });
+      const lastRowStart = (rows - 1) * 2;
+      y += Math.max(
+        detailLines[lastRowStart]?.height ?? 0,
+        detailLines[lastRowStart + 1]?.height ?? 0,
+      ) + 4;
       doc.setDrawColor(225, 230, 235);
-      doc.line(margin, y + rowHeight, margin + columns.reduce((total, column) => total + column.width, 0), y + rowHeight);
-      y += rowHeight;
+      doc.line(margin, y, margin + contentWidth, y);
+      y += 5;
+
+      const gadgetLines = visitorGadgets.length
+        ? visitorGadgets.map((gadget, index) => {
+          const itemDetails = [
+            gadget.name,
+            gadget.makeModel ? `Make/model: ${gadget.makeModel}` : null,
+            gadget.serialNumber ? `Serial: ${gadget.serialNumber}` : null,
+            `Approval: ${gadget.approvalStatus}`,
+            gadget.returnedAt ? `Returned: Yes (${formatVisitorDate(gadget.returnedAt)})` : "Returned: No",
+          ].filter(Boolean).join(" | ");
+          return doc.splitTextToSize(`${index + 1}. ${itemDetails}`, contentWidth - 4) as string[];
+        })
+        : ["None recorded"];
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(8);
+      if (y + 5 > pageHeight - margin) {
+        doc.addPage();
+        y = margin;
+      }
+      doc.text("Gadgets Carried:", margin + 2, y);
+      y += 4;
+      doc.setFont("helvetica", "normal");
+      gadgetLines.forEach((lines) => {
+        const height = Math.max(1, lines.length) * 4 + 1;
+        if (y + height > pageHeight - margin) {
+          doc.addPage();
+          y = margin;
+          doc.setFont("helvetica", "bold");
+          doc.text("Gadgets Carried (continued):", margin + 2, y);
+          y += 4;
+          doc.setFont("helvetica", "normal");
+        }
+        doc.text(lines, margin + 2, y);
+        y += height;
+      });
+      y += 3;
     }
   }
 
@@ -121,8 +225,23 @@ export default function Reports() {
   });
 
   const { data: allVisitors, isLoading: visitorsLoading } = useGetVisitors();
+  const {
+    data: allGadgets,
+    isLoading: gadgetsLoading,
+    isError: gadgetsError,
+  } = useGetAllVisitorGadgets();
 
   const COLORS = ['#00d1ff', '#22c55e', '#eab308', '#ef4444', '#a855f7'];
+
+  const gadgetsByVisitor = useMemo(() => {
+    const grouped = new Map<string, VisitorGadget[]>();
+    for (const gadget of allGadgets ?? []) {
+      const current = grouped.get(gadget.visitorId) ?? [];
+      current.push(gadget);
+      grouped.set(gadget.visitorId, current);
+    }
+    return grouped;
+  }, [allGadgets]);
 
   const filteredVisitors = useMemo(() => {
     const normalizedSearch = search.trim().toLowerCase();
@@ -152,6 +271,7 @@ export default function Reports() {
         <CardTitle className="text-lg">Visitor Records</CardTitle>
         <CardDescription>
           {visitorsLoading ? "Loading visitor records..." : `${filteredVisitors.length} record${filteredVisitors.length === 1 ? "" : "s"} match your filters.`}
+        {gadgetsError && <span className="mt-1 block text-destructive" role="alert">Gadget details could not be loaded. Exports are disabled to avoid incomplete reports.</span>}
         </CardDescription>
       </CardHeader>
       <CardContent className="p-0">
@@ -215,16 +335,16 @@ export default function Reports() {
           <Button
             type="button"
             variant="outline"
-            onClick={() => downloadVisitorCsv(filteredVisitors)}
-            disabled={visitorsLoading}
+            onClick={() => downloadVisitorCsv(filteredVisitors, gadgetsByVisitor)}
+            disabled={visitorsLoading || gadgetsLoading || gadgetsError}
           >
             <Download className="h-4 w-4" /> Excel (CSV)
           </Button>
           <Button
             type="button"
             variant="outline"
-            onClick={() => downloadVisitorPdf(filteredVisitors, period, startDate, endDate)}
-            disabled={visitorsLoading}
+            onClick={() => downloadVisitorPdf(filteredVisitors, gadgetsByVisitor, period, startDate, endDate)}
+            disabled={visitorsLoading || gadgetsLoading || gadgetsError}
           >
             <FileText className="h-4 w-4" /> Download PDF
           </Button>

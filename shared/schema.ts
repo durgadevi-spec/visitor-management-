@@ -82,6 +82,45 @@ export type InsertNotification = z.infer<typeof insertNotificationSchema>;
 export type Notification = typeof notificationsTable.$inferSelect;
 
 /* ================================
+   SYSTEM SETTINGS
+================================ */
+export const systemSettingsTable = pgTable("system_settings", {
+  id: integer("id").primaryKey().default(1),
+  facilityName: text("facility_name").notNull().default("Concept Trunk Interiors"),
+  contactEmail: text("contact_email").notNull().default("www.ctint.in"),
+  autoCheckoutEnabled: boolean("auto_checkout_enabled").notNull().default(true),
+  autoCheckoutTime: text("auto_checkout_time").notNull().default("23:59"),
+  timezone: text("timezone").notNull().default("Asia/Kolkata"),
+  requirePhoto: boolean("require_photo").notNull().default(false),
+});
+
+/* ================================
+   VISITOR AUDIT LOG
+================================ */
+export const visitorAuditTable = pgTable("visitor_audit_log", {
+  id: serial("id").primaryKey(),
+  visitorId: text("visitor_id").notNull(),
+  action: text("action").notNull(),
+  actorUserId: integer("actor_user_id"),
+  actorEmail: text("actor_email").notNull(),
+  details: text("details").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const visitorGadgetsTable = pgTable("visitor_gadgets", {
+  id: serial("id").primaryKey(),
+  visitorId: text("visitor_id").notNull(),
+  name: text("name").notNull(),
+  makeModel: text("make_model"),
+  serialNumber: text("serial_number"),
+  approvalStatus: text("approval_status").notNull().default("pending"),
+  reviewedBy: integer("reviewed_by"),
+  reviewedAt: timestamp("reviewed_at", { withTimezone: true }),
+  returnedAt: timestamp("returned_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+/* ================================
    API REQUEST VALIDATORS
    (previously generated from openapi.yaml via orval — written by hand
    here now that the codegen package is gone)
@@ -99,7 +138,7 @@ export const SignupBody = z.object({
 
 export const CreateVisitorBody = z.object({
   name: z.string(),
-  mobile: z.string(),
+  mobile: z.string().regex(/^\d{10}$/, "Mobile number must be exactly 10 digits"),
   email: z.string().nullish(),
   purpose: z.string(),
   personToMeet: z.string(),
@@ -107,7 +146,14 @@ export const CreateVisitorBody = z.object({
   idProofType: z.enum(["aadhar", "pan", "passport", "driving_license", "voter_id"]),
   idNumber: z.string(),
   photoUrl: z.string().nullish(),
+  gadgets: z.array(z.object({
+    name: z.string().trim().min(1).max(150),
+    makeModel: z.string().trim().max(150).nullish(),
+    serialNumber: z.string().trim().max(150).nullish(),
+  })).max(25).optional(),
 });
+
+export const UpdateVisitorBody = CreateVisitorBody;
 
 export const GetVisitorsQueryParams = z.object({
   status: z
@@ -123,6 +169,10 @@ export const GetVisitorsQueryParams = z.object({
   date: z.coerce.string().nullish(),
   search: z.coerce.string().nullish(),
   person_to_meet: z.coerce.string().nullish(),
+});
+
+export const LookupVisitorByMobileQueryParams = z.object({
+  mobile: z.string().regex(/^\d{10}$/, "Enter a valid 10-digit mobile number"),
 });
 
 export const ApproveVisitorBody = z.object({
@@ -150,6 +200,21 @@ export const UpdateUserBody = z.object({
 
 export const AddToBlacklistBody = z.object({
   name: z.string(),
-  mobile: z.string(),
+  mobile: z.string().regex(/^\d{10}$/, "Mobile number must be exactly 10 digits"),
   reason: z.string(),
+});
+
+export const UpdateBlacklistBody = AddToBlacklistBody;
+
+export const UpdateSystemSettingsBody = z.object({
+  facilityName: z.string().trim().min(1, "Facility name is required"),
+  contactEmail: z.string().trim().min(1, "Contact email is required"),
+  autoCheckoutEnabled: z.boolean(),
+  autoCheckoutTime: z.string().regex(/^(?:[01]\d|2[0-3]):[0-5]\d$/, "Enter a valid time"),
+  timezone: z.string().min(1, "Timezone is required"),
+  requirePhoto: z.boolean(),
+});
+
+export const ReviewVisitorGadgetBody = z.object({
+  action: z.enum(["approve", "reject"]),
 });

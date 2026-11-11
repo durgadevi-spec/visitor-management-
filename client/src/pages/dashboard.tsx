@@ -2,18 +2,30 @@ import {
   useGetDashboardStats, 
   useGetRecentVisitors, 
   useGetActivityFeed,
+  useGetVisitors,
   getGetDashboardStatsQueryKey,
   getGetRecentVisitorsQueryKey,
   getGetActivityFeedQueryKey
 } from "@/lib/api-client";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { format } from "date-fns";
-import { Activity, Clock, LogIn, Users, CheckCircle2, UserCheck, ShieldAlert } from "lucide-react";
+import { Activity, Clock, LogIn, Users, CheckCircle2, UserCheck, ShieldAlert, Printer } from "lucide-react";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Link } from "wouter";
 import { motion, useReducedMotion } from "framer-motion";
+
+function escapeHtml(value: string) {
+  return value.replace(/[&<>"']/g, (character) => ({
+    "&": "&amp;",
+    "<": "&lt;",
+    ">": "&gt;",
+    '"': "&quot;",
+    "'": "&#39;",
+  })[character]!);
+}
 
 export default function Dashboard() {
   const reduceMotion = useReducedMotion();
@@ -28,6 +40,68 @@ export default function Dashboard() {
   const { data: activities, isLoading: activityLoading } = useGetActivityFeed({
     query: { queryKey: getGetActivityFeedQueryKey() }
   });
+
+  const {
+    isFetching: insideVisitorsFetching,
+    isLoading: insideVisitorsLoading,
+    refetch: refetchVisitorsInside,
+  } = useGetVisitors({ status: "checked_in" });
+
+  const printEmergencyRollCall = async () => {
+    if (insideVisitorsLoading || insideVisitorsFetching) return;
+    const printWindow = window.open("", "_blank");
+    if (!printWindow) {
+      window.alert("Allow pop-ups for this site to print the emergency roll-call report.");
+      return;
+    }
+
+    const result = await refetchVisitorsInside();
+    if (result.isError || !result.data) {
+      printWindow.close();
+      window.alert(`Unable to load the current visitor list: ${result.error?.message ?? "No visitor data was returned."}`);
+      return;
+    }
+
+    const visitorsInside = result.data;
+    const rows = visitorsInside.map((visitor) => `
+      <tr>
+        <td>${escapeHtml(visitor.name)}</td>
+        <td>${escapeHtml(visitor.personToMeet)}</td>
+        <td>${visitor.checkIn ? escapeHtml(format(new Date(visitor.checkIn), "PPpp")) : "Not recorded"}</td>
+      </tr>
+    `).join("");
+    const generatedAt = escapeHtml(format(new Date(), "PPpp"));
+
+    printWindow.document.open();
+    printWindow.document.write(`<!doctype html>
+      <html lang="en">
+        <head>
+          <meta charset="utf-8">
+          <meta name="viewport" content="width=device-width, initial-scale=1">
+          <title>Emergency Roll Call</title>
+          <style>
+            body { font-family: Arial, sans-serif; color: #111; margin: 32px; }
+            h1 { margin: 0 0 8px; }
+            p { margin: 0 0 20px; color: #444; }
+            table { width: 100%; border-collapse: collapse; }
+            th, td { border: 1px solid #999; padding: 10px; text-align: left; }
+            th { background: #eee; }
+            @media print { body { margin: 16mm; } }
+          </style>
+        </head>
+        <body>
+          <h1>Emergency Roll Call</h1>
+          <p>Generated: ${generatedAt} | Visitors currently inside: ${visitorsInside.length}</p>
+          <table>
+            <thead><tr><th>Visitor Name</th><th>Host</th><th>Check-in Time</th></tr></thead>
+            <tbody>${rows || '<tr><td colspan="3">No visitors are currently checked in.</td></tr>'}</tbody>
+          </table>
+        </body>
+      </html>`);
+    printWindow.document.close();
+    printWindow.focus();
+    printWindow.print();
+  };
 
   const getStatusColor = (status: string) => {
     switch (status) {
@@ -155,6 +229,21 @@ export default function Dashboard() {
           />
         </motion.div>
       </div>
+
+      <Card className="border-border bg-card">
+        <CardContent className="flex flex-col gap-3 p-4 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <CardTitle className="text-base">Emergency Roll Call</CardTitle>
+            <p className="mt-1 text-sm text-muted-foreground">
+              Print the current list of visitors on the premises
+            </p>
+          </div>
+          <Button onClick={printEmergencyRollCall} disabled={insideVisitorsLoading || insideVisitorsFetching}>
+            <Printer className="mr-2 h-4 w-4" />
+            {insideVisitorsLoading || insideVisitorsFetching ? "Loading visitors..." : "Print Roll Call"}
+          </Button>
+        </CardContent>
+      </Card>
 
       <div className="grid grid-cols-1 items-stretch gap-4 lg:grid-cols-7">
         {/* Recent Visitors */}
