@@ -191,6 +191,7 @@ export interface ReportData {
 export interface SystemSettings {
   id: number;
   facilityName: string;
+  companyLogo: string | null;
   contactEmail: string;
   autoCheckoutEnabled: boolean;
   autoCheckoutTime: string;

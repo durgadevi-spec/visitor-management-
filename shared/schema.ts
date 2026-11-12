@@ -87,6 +87,7 @@ export type Notification = typeof notificationsTable.$inferSelect;
 export const systemSettingsTable = pgTable("system_settings", {
   id: integer("id").primaryKey().default(1),
   facilityName: text("facility_name").notNull().default("Concept Trunk Interiors"),
+  companyLogo: text("company_logo"),
   contactEmail: text("contact_email").notNull().default("www.ctint.in"),
   autoCheckoutEnabled: boolean("auto_checkout_enabled").notNull().default(true),
   autoCheckoutTime: text("auto_checkout_time").notNull().default("23:59"),
@@ -208,6 +209,10 @@ export const UpdateBlacklistBody = AddToBlacklistBody;
 
 export const UpdateSystemSettingsBody = z.object({
   facilityName: z.string().trim().min(1, "Facility name is required"),
+  companyLogo: z.string()
+    .max(350_000, "Company logo is too large")
+    .regex(/^data:image\/(?:png|jpeg);base64,[A-Za-z0-9+/]+={0,2}$/, "Company logo must be an optimized image")
+    .nullable(),
   contactEmail: z.string().trim().min(1, "Contact email is required"),
   autoCheckoutEnabled: z.boolean(),
   autoCheckoutTime: z.string().regex(/^(?:[01]\d|2[0-3]):[0-5]\d$/, "Enter a valid time"),

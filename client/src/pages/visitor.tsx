@@ -194,25 +194,6 @@ export default function VisitorDetail() {
     window.print();
   };
 
-  const loadImageAsDataUrl = async (src: string): Promise<{ dataUrl: string; format: "PNG" | "JPEG" }> => {
-    const response = await fetch(src);
-
-    if (!response.ok) {
-      throw new Error(`Unable to fetch image: ${src}`);
-    }
-
-    const blob = await response.blob();
-    const fileType = blob.type || "image/png";
-    const format = fileType.includes("jpeg") ? "JPEG" : "PNG";
-
-    return await new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = () => resolve({ dataUrl: reader.result as string, format });
-      reader.onerror = () => reject(new Error(`Unable to read image: ${src}`));
-      reader.readAsDataURL(blob);
-    });
-  };
-
   const downloadVisitorPassPdf = async () => {
     if (!visitor) return;
     if (!qrCodeImage) {
@@ -243,16 +224,14 @@ export default function VisitorDetail() {
     doc.setFontSize(6);
     doc.text(systemSettings?.contactEmail ?? "", 52.5, 25, { align: "center" });
 
-    try {
-      const logoImageUrl = new URL("/company-logo.png", window.location.origin).toString();
-      const { dataUrl, format } = await loadImageAsDataUrl(logoImageUrl);
-      doc.addImage(dataUrl, format, 11, 8, 12, 12);
-    } catch {
+    if (systemSettings?.companyLogo) {
+      doc.addImage(systemSettings.companyLogo, systemSettings.companyLogo.startsWith("data:image/png") ? "PNG" : "JPEG", 10, 10, 21, 7);
+    } else {
       doc.setDrawColor(80, 80, 80);
       doc.roundedRect(11, 8, 12, 12, 1.2, 1.2, "S");
       doc.setFont("helvetica", "bold");
       doc.setFontSize(7);
-      doc.text("CTI", 17, 14, { align: "center" });
+      doc.text((systemSettings?.facilityName ?? "VMS").replace(/[^a-z0-9]/gi, "").slice(0, 3).toUpperCase() || "VMS", 17, 14, { align: "center" });
     }
 
     doc.setFont("helvetica", "bold");
@@ -449,6 +428,9 @@ export default function VisitorDetail() {
         <div className="lg:col-span-1 print:w-full print:h-screen print:flex print:items-center print:justify-center print:bg-white">
           <Card className="border-border bg-card overflow-hidden print:w-[300px] print:h-[450px] print:border-2 print:border-black print:bg-white print:text-black print:shadow-none">
             <div className="bg-primary/20 border-b border-primary/30 p-4 text-center print:bg-white print:text-black print:border-none">
+              {systemSettings?.companyLogo && (
+                <img src={systemSettings.companyLogo} alt={`${systemSettings.facilityName} logo`} className="mx-auto mb-2 h-12 max-w-36 object-contain" />
+              )}
               <h2 className="font-bold tracking-widest text-primary print:text-black">{systemSettings?.facilityName ?? "VISITOR PASS"}</h2>
               {systemSettings?.contactEmail && (
                 <p className="mt-1 text-[10px] text-muted-foreground print:text-gray-600">{systemSettings.contactEmail}</p>

@@ -39,12 +39,17 @@ export async function ensureSystemSettingsTable() {
     CREATE TABLE IF NOT EXISTS system_settings (
       id integer PRIMARY KEY DEFAULT 1,
       facility_name text NOT NULL DEFAULT 'Concept Trunk Interiors',
+      company_logo text,
       contact_email text NOT NULL DEFAULT 'www.ctint.in',
       auto_checkout_enabled boolean NOT NULL DEFAULT true,
       auto_checkout_time text NOT NULL DEFAULT '23:59',
       timezone text NOT NULL DEFAULT 'Asia/Kolkata',
       require_photo boolean NOT NULL DEFAULT false
     )
+  `);
+  await pool.query(`
+    ALTER TABLE system_settings
+    ADD COLUMN IF NOT EXISTS company_logo text
   `);
 }
 
