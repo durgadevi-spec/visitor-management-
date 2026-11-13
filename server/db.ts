@@ -91,3 +91,10 @@ export async function ensureVisitorGadgetsTable() {
     ON visitor_gadgets (visitor_id, created_at)
   `);
 }
+
+export async function ensureScheduledVisitsColumn() {
+  await pool.query(`
+    ALTER TABLE visitors
+    ADD COLUMN IF NOT EXISTS scheduled_for date
+  `);
+}

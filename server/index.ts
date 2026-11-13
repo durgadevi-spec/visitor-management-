@@ -5,7 +5,7 @@ import { and, eq, lte } from "drizzle-orm";
 import cors from "cors";
 import { registerRoutes } from "./routes";
 import { serveStatic } from "./static";
-import { checkDatabaseConnection, db, ensureSystemSettingsTable, ensureVisitorAuditTable, ensureVisitorGadgetsTable } from "./db";
+import { checkDatabaseConnection, db, ensureSystemSettingsTable, ensureVisitorAuditTable, ensureVisitorGadgetsTable, ensureScheduledVisitsColumn } from "./db";
 import { visitorAuditTable, visitorsTable } from "../shared/schema.ts";
 import { getSystemSettings } from "./settings";
 
@@ -189,6 +189,7 @@ async function bootstrap() {
     await ensureSystemSettingsTable();
     await ensureVisitorAuditTable();
     await ensureVisitorGadgetsTable();
+    await ensureScheduledVisitsColumn();
     console.log("✨ Database is ready for queries.");
   }
 

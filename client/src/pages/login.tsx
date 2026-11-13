@@ -2,10 +2,12 @@ import { useEffect, useState, type FormEvent } from "react";
 import { Eye, EyeOff, ShieldAlert } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
 import { useLogin, useSignup } from "@/lib/api-client";
-import { Redirect, useLocation } from "wouter";
+import { Link, Redirect, useLocation } from "wouter";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
+import { useLanguage } from "@/contexts/LanguageContext";
+import { LanguageSwitcher } from "@/components/LanguageSwitcher";
 
 type AuthMode = "login" | "signup";
 const REMEMBERED_EMAIL_KEY = "vms_remembered_email";
@@ -15,7 +17,11 @@ export default function Login() {
     if (typeof window === "undefined") return "light";
     return window.localStorage.getItem("theme") === "dark" ? "dark" : "light";
   });
-  const [mode, setMode] = useState<AuthMode>("login");
+  const [mode, setMode] = useState<AuthMode>(() =>
+    typeof window !== "undefined" && new URLSearchParams(window.location.search).get("mode") === "signup"
+      ? "signup"
+      : "login"
+  );
   const [name, setName] = useState("");
   const [email, setEmail] = useState(() =>
     typeof window === "undefined" ? "" : window.localStorage.getItem(REMEMBERED_EMAIL_KEY) ?? ""
@@ -27,6 +33,7 @@ export default function Login() {
   const [rememberMe, setRememberMe] = useState(true);
   const { user, login } = useAuth();
   const { toast } = useToast();
+  const { t } = useLanguage();
   const [, setLocation] = useLocation();
 
   useEffect(() => {
@@ -49,8 +56,8 @@ export default function Login() {
       onError: (error) => {
         toast({
           variant: "destructive",
-          title: "Login failed",
-          description: error.error || "Invalid credentials",
+          title: t("Login failed"),
+          description: t(error.error || "Invalid credentials"),
         });
       },
     }
@@ -65,14 +72,14 @@ export default function Login() {
           window.localStorage.removeItem(REMEMBERED_EMAIL_KEY);
         }
         login(data.token, data.user, variables.rememberMe);
-        toast({ title: "Account created", description: "You can now access the visitor management system." });
+        toast({ title: t("Account created"), description: t("You can now access the visitor management system.") });
         setLocation("/");
       },
       onError: (error) => {
         toast({
           variant: "destructive",
-          title: "Signup failed",
-          description: error.error || "Unable to create account",
+          title: t("Signup failed"),
+          description: t(error.error || "Unable to create account"),
         });
       },
     }
@@ -87,11 +94,11 @@ export default function Login() {
 
     if (mode === "signup") {
       if (password.length < 8) {
-        toast({ variant: "destructive", title: "Password too short", description: "Use at least 8 characters." });
+        toast({ variant: "destructive", title: t("Password too short"), description: t("Use at least 8 characters.") });
         return;
       }
       if (password !== confirmPassword) {
-        toast({ variant: "destructive", title: "Passwords do not match", description: "Confirm your password and try again." });
+        toast({ variant: "destructive", title: t("Passwords do not match"), description: t("Confirm your password and try again.") });
         return;
       }
       signupMutation.mutate({ data: { name, email, password }, rememberMe });
@@ -105,14 +112,17 @@ export default function Login() {
 
   return (
     <div className="flex min-h-screen w-full items-center justify-center bg-background p-4 text-foreground">
-      <div className="w-full max-w-md overflow-hidden rounded-xl border border-border bg-card shadow-2xl">
+      <div className="relative w-full max-w-md overflow-hidden rounded-xl border border-border bg-card shadow-2xl">
+        <div className="flex justify-end p-3 pb-0">
+          <LanguageSwitcher />
+        </div>
         <div className="flex flex-col items-center justify-center space-y-3 border-b border-border bg-card-foreground/5 p-8 text-center">
           <div className="rounded-full bg-primary/20 p-3 ring-1 ring-primary/30 shadow-[0_0_15px_rgba(var(--primary),0.3)]">
             <ShieldAlert className="h-8 w-8 text-primary" />
           </div>
-          <h1 className="text-2xl font-bold tracking-tight">VMS Mission Control</h1>
+          <h1 className="text-2xl font-bold tracking-tight">{t("VMS Mission Control")}</h1>
           <p className="text-sm text-muted-foreground">
-            {mode === "login" ? "Sign in to your account" : "Create an employee account"}
+            {mode === "login" ? t("Sign in to your account") : t("Create an employee account")}
           </p>
         </div>
 
@@ -120,14 +130,14 @@ export default function Login() {
           {mode === "signup" && (
             <div className="space-y-2">
               <label htmlFor="signup-name" className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
-                Full Name
+                {t("Full Name")}
               </label>
               <Input
                 id="signup-name"
                 autoComplete="name"
                 value={name}
                 onChange={(event) => setName(event.target.value)}
-                placeholder="Your name"
+                placeholder={t("Your name")}
                 minLength={2}
                 required
                 className="border-border bg-background text-foreground focus-visible:ring-primary"
@@ -137,7 +147,7 @@ export default function Login() {
 
           <div className="space-y-2">
             <label htmlFor="auth-email" className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
-              Email Address
+              {t("Email Address")}
             </label>
             <Input
               id="auth-email"
@@ -154,7 +164,7 @@ export default function Login() {
 
           <div className="space-y-2">
             <label htmlFor="auth-password" className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
-              Password
+              {t("Password")}
             </label>
             <div className="relative">
               <Input
@@ -164,7 +174,7 @@ export default function Login() {
                 autoComplete={mode === "login" ? "current-password" : "new-password"}
                 value={password}
                 onChange={(event) => setPassword(event.target.value)}
-                placeholder="Enter your password"
+                placeholder={t("Enter your password")}
                 minLength={mode === "signup" ? 8 : undefined}
                 required
                 className="border-border bg-background pr-11 text-foreground focus-visible:ring-primary"
@@ -173,19 +183,19 @@ export default function Login() {
                 type="button"
                 onClick={() => setShowPassword((visible) => !visible)}
                 className="absolute inset-y-0 right-0 flex w-10 items-center justify-center text-muted-foreground hover:text-foreground"
-                aria-label={showPassword ? "Hide password" : "Show password"}
+                aria-label={showPassword ? t("Hide password") : t("Show password")}
                 aria-pressed={showPassword}
               >
                 {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
               </button>
             </div>
-            {mode === "signup" && <p className="text-xs text-muted-foreground">Use at least 8 characters.</p>}
+            {mode === "signup" && <p className="text-xs text-muted-foreground">{t("Use at least 8 characters.")}</p>}
           </div>
 
           {mode === "signup" && (
             <div className="space-y-2">
               <label htmlFor="confirm-password" className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
-                Confirm Password
+                {t("Confirm Password")}
               </label>
               <div className="relative">
                 <Input
@@ -194,7 +204,7 @@ export default function Login() {
                   autoComplete="new-password"
                   value={confirmPassword}
                   onChange={(event) => setConfirmPassword(event.target.value)}
-                  placeholder="Re-enter your password"
+                  placeholder={t("Re-enter your password")}
                   required
                   className="border-border bg-background pr-11 text-foreground focus-visible:ring-primary"
                 />
@@ -202,7 +212,7 @@ export default function Login() {
                   type="button"
                   onClick={() => setShowConfirmPassword((visible) => !visible)}
                   className="absolute inset-y-0 right-0 flex w-10 items-center justify-center text-muted-foreground hover:text-foreground"
-                  aria-label={showConfirmPassword ? "Hide confirmation password" : "Show confirmation password"}
+                  aria-label={showConfirmPassword ? t("Hide confirmation password") : t("Show confirmation password")}
                   aria-pressed={showConfirmPassword}
                 >
                   {showConfirmPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
@@ -224,7 +234,7 @@ export default function Login() {
               }}
               className="h-4 w-4 rounded border-border accent-primary"
             />
-            Remember me
+            {t("Remember me")}
           </label>
 
           <Button
@@ -233,12 +243,12 @@ export default function Login() {
             disabled={isPending}
           >
             {isPending
-              ? (mode === "login" ? "Signing In..." : "Creating Account...")
-              : (mode === "login" ? "Sign In" : "Create Account")}
+              ? (mode === "login" ? t("Signing In...") : t("Creating Account..."))
+              : (mode === "login" ? t("Sign In") : t("Create Account"))}
           </Button>
 
           <div className="text-center text-sm text-muted-foreground">
-            {mode === "login" ? "Don't have an account?" : "Already have an account?"}{" "}
+            {mode === "login" ? t("Don't have an account?") : t("Already have an account?")}{" "}
             <button
               type="button"
               onClick={() => {
@@ -248,12 +258,17 @@ export default function Login() {
               }}
               className="font-medium text-primary hover:underline"
             >
-              {mode === "login" ? "Sign up" : "Sign in"}
+              {mode === "login" ? t("Sign up") : t("Sign in")}
             </button>
           </div>
 
           <div className="text-center text-xs text-muted-foreground">
-            UNAUTHORIZED ACCESS IS STRICTLY PROHIBITED
+            {t("UNAUTHORIZED ACCESS IS STRICTLY PROHIBITED")}
+          </div>
+          <div className="text-center text-sm">
+            <Link href="/" className="font-medium text-primary hover:underline">
+              {t("Back to home")}
+            </Link>
           </div>
         </form>
       </div>

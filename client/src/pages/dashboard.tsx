@@ -10,12 +10,12 @@ import {
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { format } from "date-fns";
 import { Activity, Clock, LogIn, Users, CheckCircle2, UserCheck, ShieldAlert, Printer } from "lucide-react";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Link } from "wouter";
 import { motion, useReducedMotion } from "framer-motion";
+import { useLanguage } from "@/contexts/LanguageContext";
 
 function escapeHtml(value: string) {
   return value.replace(/[&<>"']/g, (character) => ({
@@ -29,6 +29,7 @@ function escapeHtml(value: string) {
 
 export default function Dashboard() {
   const reduceMotion = useReducedMotion();
+  const { t, formatDate } = useLanguage();
   const { data: stats, isLoading: statsLoading } = useGetDashboardStats({
     query: { queryKey: getGetDashboardStatsQueryKey() }
   });
@@ -51,14 +52,14 @@ export default function Dashboard() {
     if (insideVisitorsLoading || insideVisitorsFetching) return;
     const printWindow = window.open("", "_blank");
     if (!printWindow) {
-      window.alert("Allow pop-ups for this site to print the emergency roll-call report.");
+      window.alert(t("Allow pop-ups for this site to print the emergency roll-call report."));
       return;
     }
 
     const result = await refetchVisitorsInside();
     if (result.isError || !result.data) {
       printWindow.close();
-      window.alert(`Unable to load the current visitor list: ${result.error?.message ?? "No visitor data was returned."}`);
+      window.alert(`${t("Unable to load the current visitor list:")} ${result.error?.message ?? t("No visitor data was returned.")}`);
       return;
     }
 
@@ -67,18 +68,18 @@ export default function Dashboard() {
       <tr>
         <td>${escapeHtml(visitor.name)}</td>
         <td>${escapeHtml(visitor.personToMeet)}</td>
-        <td>${visitor.checkIn ? escapeHtml(format(new Date(visitor.checkIn), "PPpp")) : "Not recorded"}</td>
+        <td>${visitor.checkIn ? escapeHtml(formatDate(new Date(visitor.checkIn), "PPpp")) : t("Not recorded")}</td>
       </tr>
     `).join("");
-    const generatedAt = escapeHtml(format(new Date(), "PPpp"));
+    const generatedAt = escapeHtml(formatDate(new Date(), "PPpp"));
 
     printWindow.document.open();
     printWindow.document.write(`<!doctype html>
-      <html lang="en">
+      <html lang="${document.documentElement.lang}">
         <head>
           <meta charset="utf-8">
           <meta name="viewport" content="width=device-width, initial-scale=1">
-          <title>Emergency Roll Call</title>
+          <title>${t("Emergency Roll Call")}</title>
           <style>
             body { font-family: Arial, sans-serif; color: #111; margin: 32px; }
             h1 { margin: 0 0 8px; }
@@ -90,11 +91,11 @@ export default function Dashboard() {
           </style>
         </head>
         <body>
-          <h1>Emergency Roll Call</h1>
-          <p>Generated: ${generatedAt} | Visitors currently inside: ${visitorsInside.length}</p>
+          <h1>${t("Emergency Roll Call")}</h1>
+          <p>${t("Generated:")} ${generatedAt} | ${t("Visitors currently inside:")} ${visitorsInside.length}</p>
           <table>
-            <thead><tr><th>Visitor Name</th><th>Host</th><th>Check-in Time</th></tr></thead>
-            <tbody>${rows || '<tr><td colspan="3">No visitors are currently checked in.</td></tr>'}</tbody>
+            <thead><tr><th>${t("Visitor Name")}</th><th>${t("Host")}</th><th>${t("Check-in Time")}</th></tr></thead>
+            <tbody>${rows || `<tr><td colspan="3">${t("No visitors are currently checked in.")}</td></tr>`}</tbody>
           </table>
         </body>
       </html>`);
@@ -110,6 +111,7 @@ export default function Dashboard() {
       case "pending": return "bg-yellow-500/20 text-yellow-400 border-yellow-500/30";
       case "rejected": return "bg-red-500/20 text-red-400 border-red-500/30";
       case "approved": return "bg-purple-500/20 text-purple-400 border-purple-500/30";
+      case "scheduled": return "bg-amber-500/20 text-amber-500 border-amber-500/30";
       default: return "bg-gray-500/20 text-gray-400 border-gray-500/30";
     }
   };
@@ -133,8 +135,8 @@ export default function Dashboard() {
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: reduceMotion ? 0 : 0.3 }}
       >
-        <h1 className="text-2xl font-bold tracking-tight text-foreground">Mission Control</h1>
-        <div className="text-sm text-muted-foreground">{format(new Date(), "PPpp")}</div>
+        <h1 className="text-2xl font-bold tracking-tight text-foreground">{t("Mission Control")}</h1>
+        <div className="text-sm text-muted-foreground">{formatDate(new Date(), "PPpp")}</div>
       </motion.div>
 
       {/* Stats Row */}
@@ -149,7 +151,7 @@ export default function Dashboard() {
         >
           <img
             src="/dashboard-office-illustration.png"
-            alt="Reception team welcoming visitors"
+            alt={t("Reception team welcoming visitors")}
             className="h-28 w-full object-contain"
           />
         </motion.div>
@@ -162,14 +164,14 @@ export default function Dashboard() {
         >
         <Card className="h-full border-border bg-card transition-shadow hover:shadow-md">
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium uppercase tracking-wider text-muted-foreground">Total Today</CardTitle>
+            <CardTitle className="text-sm font-medium uppercase tracking-wider text-muted-foreground">{t("Total Today")}</CardTitle>
             <Users className="h-4 w-4 text-primary" />
           </CardHeader>
           <CardContent>
             <div className="text-3xl font-bold text-foreground">
               {statsLoading ? <Skeleton className="h-9 w-20" /> : stats?.totalToday || 0}
             </div>
-            <p className="text-xs text-muted-foreground mt-1">+{(stats?.totalThisWeek || 0)} this week</p>
+            <p className="text-xs text-muted-foreground mt-1">+{(stats?.totalThisWeek || 0)} {t("this week")}</p>
           </CardContent>
         </Card>
         </motion.div>
@@ -182,14 +184,14 @@ export default function Dashboard() {
         >
         <Card className="h-full border-border bg-card transition-shadow hover:shadow-md">
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium uppercase tracking-wider text-muted-foreground">Inside Now</CardTitle>
+            <CardTitle className="text-sm font-medium uppercase tracking-wider text-muted-foreground">{t("Inside Now")}</CardTitle>
             <UserCheck className="h-4 w-4 text-blue-400" />
           </CardHeader>
           <CardContent>
             <div className="text-3xl font-bold text-blue-400">
               {statsLoading ? <Skeleton className="h-9 w-20" /> : stats?.visitorsInside || 0}
             </div>
-            <p className="text-xs text-muted-foreground mt-1">Currently on premises</p>
+            <p className="text-xs text-muted-foreground mt-1">{t("Currently on premises")}</p>
           </CardContent>
         </Card>
         </motion.div>
@@ -202,14 +204,14 @@ export default function Dashboard() {
         >
         <Card className="h-full border-border bg-card transition-shadow hover:shadow-md">
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium uppercase tracking-wider text-muted-foreground">Pending</CardTitle>
+            <CardTitle className="text-sm font-medium uppercase tracking-wider text-muted-foreground">{t("Pending")}</CardTitle>
             <Clock className="h-4 w-4 text-yellow-400" />
           </CardHeader>
           <CardContent>
             <div className="text-3xl font-bold text-yellow-400">
               {statsLoading ? <Skeleton className="h-9 w-20" /> : stats?.pendingApprovals || 0}
             </div>
-            <p className="text-xs text-muted-foreground mt-1">Awaiting security clearance</p>
+            <p className="text-xs text-muted-foreground mt-1">{t("Awaiting security clearance")}</p>
           </CardContent>
         </Card>
         </motion.div>
@@ -224,7 +226,7 @@ export default function Dashboard() {
         >
           <img
             src="/dashboard-lobby-illustration.png"
-            alt="Visitors waiting at a reception desk"
+            alt={t("Visitors waiting at a reception desk")}
             className="h-28 w-full object-cover object-center"
           />
         </motion.div>
@@ -233,14 +235,14 @@ export default function Dashboard() {
       <Card className="border-border bg-card">
         <CardContent className="flex flex-col gap-3 p-4 sm:flex-row sm:items-center sm:justify-between">
           <div>
-            <CardTitle className="text-base">Emergency Roll Call</CardTitle>
+            <CardTitle className="text-base">{t("Emergency Roll Call")}</CardTitle>
             <p className="mt-1 text-sm text-muted-foreground">
-              Print the current list of visitors on the premises
+              {t("Print the current list of visitors on the premises")}
             </p>
           </div>
           <Button onClick={printEmergencyRollCall} disabled={insideVisitorsLoading || insideVisitorsFetching}>
             <Printer className="mr-2 h-4 w-4" />
-            {insideVisitorsLoading || insideVisitorsFetching ? "Loading visitors..." : "Print Roll Call"}
+            {insideVisitorsLoading || insideVisitorsFetching ? t("Loading visitors...") : t("Print Roll Call")}
           </Button>
         </CardContent>
       </Card>
@@ -255,7 +257,7 @@ export default function Dashboard() {
         >
           <Card className="h-full border-border bg-card">
             <CardHeader className="pb-4">
-              <CardTitle className="text-lg font-semibold text-foreground">Live Manifest</CardTitle>
+              <CardTitle className="text-lg font-semibold text-foreground">{t("Live Manifest")}</CardTitle>
             </CardHeader>
             <CardContent>
               <ScrollArea className="h-[400px] pr-4">
@@ -263,7 +265,7 @@ export default function Dashboard() {
                 {visitorsLoading ? (
                   Array(5).fill(0).map((_, i) => <Skeleton key={i} className="h-16 w-full" />)
                 ) : recentVisitors?.length === 0 ? (
-                  <div className="text-center py-8 text-muted-foreground">No recent visitors</div>
+                  <div className="text-center py-8 text-muted-foreground">{t("No recent visitors")}</div>
                 ) : (
                   recentVisitors?.map((visitor, index) => (
                     <motion.div
@@ -278,25 +280,25 @@ export default function Dashboard() {
                           {visitor.name.charAt(0)}
                         </div>
                         <div>
-                          <Link href={`/visitor/${visitor.id}`} className="font-medium text-foreground hover:underline">
+                          <Link href={`/visitor-record/${visitor.id}`} className="font-medium text-foreground hover:underline">
                             {visitor.name}
                           </Link>
-                          <div className="text-xs text-muted-foreground">ID: <span className="font-mono text-primary/80">{visitor.visitorId}</span></div>
+                          <div className="text-xs text-muted-foreground">{t("ID:")} <span className="font-mono text-primary/80">{visitor.visitorId}</span></div>
                         </div>
                       </div>
                       <div className="flex items-center gap-4 text-right">
                         <div className="text-xs text-muted-foreground">
-                          <div>Meeting: <span className="text-foreground">{visitor.personToMeet}</span></div>
+                          <div>{t("Meeting:")} <span className="text-foreground">{visitor.personToMeet}</span></div>
                           <div className="mt-1">
                             {visitor.status === "checked_in" && visitor.checkIn
-                              ? `Check-in: ${format(new Date(visitor.checkIn), "MMM d, HH:mm")}`
+                              ? `${t("Check-in:")} ${formatDate(new Date(visitor.checkIn), "MMM d, HH:mm")}`
                               : visitor.status === "checked_out" && visitor.checkOut
-                                ? `Check-out: ${format(new Date(visitor.checkOut), "MMM d, HH:mm")}`
-                                : `Registered: ${format(new Date(visitor.createdAt), "MMM d, HH:mm")}`}
+                                ? `${t("Check-out:")} ${formatDate(new Date(visitor.checkOut), "MMM d, HH:mm")}`
+                                : `${t("Registered:")} ${formatDate(new Date(visitor.createdAt), "MMM d, HH:mm")}`}
                           </div>
                         </div>
                         <Badge variant="outline" className={getStatusColor(visitor.status)}>
-                          {visitor.status.replace("_", " ")}
+                          {t(visitor.status.replace("_", " ").replace(/\b\w/g, (letter) => letter.toUpperCase()))}
                         </Badge>
                       </div>
                     </motion.div>
@@ -317,7 +319,7 @@ export default function Dashboard() {
         >
           <Card className="h-full border-border bg-card">
             <CardHeader className="pb-4">
-              <CardTitle className="text-lg font-semibold text-foreground">Activity Stream</CardTitle>
+              <CardTitle className="text-lg font-semibold text-foreground">{t("Activity Stream")}</CardTitle>
             </CardHeader>
             <CardContent>
               <ScrollArea className="h-[400px] pr-4">
@@ -325,7 +327,7 @@ export default function Dashboard() {
                 {activityLoading ? (
                   Array(5).fill(0).map((_, i) => <Skeleton key={i} className="h-12 w-full" />)
                 ) : activities?.length === 0 ? (
-                  <div className="text-center py-8 text-muted-foreground">No recent activity</div>
+                  <div className="text-center py-8 text-muted-foreground">{t("No recent activity")}</div>
                 ) : (
                   activities?.map((activity, index) => (
                     <motion.div
@@ -345,10 +347,10 @@ export default function Dashboard() {
                           {activity.visitorName}
                         </span>
                         <span className="text-sm text-muted-foreground">
-                          {activity.message}
+                          {t(activity.message)}
                         </span>
                         <span className="text-xs text-muted-foreground/70 mt-1">
-                          {format(new Date(activity.timestamp), "HH:mm:ss")}
+                          {formatDate(new Date(activity.timestamp), "HH:mm:ss")}
                         </span>
                       </div>
                     </motion.div>

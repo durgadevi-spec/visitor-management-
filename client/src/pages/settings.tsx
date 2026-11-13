@@ -18,6 +18,7 @@ import {
   useUpdateSystemSettings,
   type SystemSettings,
 } from "@/lib/api-client";
+import { useLanguage } from "@/contexts/LanguageContext";
 
 const settingsSchema = z.object({
   facilityName: z.string().trim().min(1, "Facility name is required"),
@@ -75,6 +76,7 @@ const defaultSettings: SettingsForm = {
 };
 
 export default function Settings() {
+  const { t } = useLanguage();
   const queryClient = useQueryClient();
   const { toast } = useToast();
   const logoInputRef = useRef<HTMLInputElement>(null);
@@ -110,10 +112,10 @@ export default function Settings() {
     mutation: {
       onSuccess: (updatedSettings: SystemSettings) => {
         queryClient.setQueryData(getGetSystemSettingsQueryKey(), updatedSettings);
-        toast({ title: "Settings Saved", description: "System preferences have been updated." });
+        toast({ title: t("Settings Saved"), description: t("System preferences have been updated.") });
       },
       onError: (error) => {
-        toast({ title: "Save Failed", description: error.error, variant: "destructive" });
+        toast({ title: t("Save Failed"), description: t(error.error), variant: "destructive" });
       },
     },
   });
@@ -135,11 +137,11 @@ export default function Settings() {
     event.target.value = "";
     if (!file) return;
     if (!file.type.startsWith("image/")) {
-      toast({ title: "Invalid logo", description: "Choose an image file for the company logo.", variant: "destructive" });
+      toast({ title: t("Invalid logo"), description: t("Choose an image file for the company logo."), variant: "destructive" });
       return;
     }
     if (file.size > 5 * 1024 * 1024) {
-      toast({ title: "Logo too large", description: "Choose an image smaller than 5 MB.", variant: "destructive" });
+      toast({ title: t("Logo too large"), description: t("Choose an image smaller than 5 MB."), variant: "destructive" });
       return;
     }
 
@@ -155,7 +157,7 @@ export default function Settings() {
     };
     image.onerror = () => {
       URL.revokeObjectURL(imageUrl);
-      toast({ title: "Logo upload failed", description: "The selected file could not be opened as an image.", variant: "destructive" });
+      toast({ title: t("Logo upload failed"), description: t("The selected file could not be opened as an image."), variant: "destructive" });
     };
     image.src = imageUrl;
   };
@@ -170,12 +172,12 @@ export default function Settings() {
     if (!logoImage) return;
     const output = document.createElement("canvas");
     if (!drawLogoCrop(logoImage, output, 1200, cropZoom, cropRotation, cropPosition)) {
-      toast({ title: "Logo processing failed", description: "Unable to crop this image. Please try again.", variant: "destructive" });
+      toast({ title: t("Logo processing failed"), description: t("Unable to crop this image. Please try again."), variant: "destructive" });
       return;
     }
     const dataUrl = output.toDataURL("image/png");
     if (dataUrl.length > 350_000) {
-      toast({ title: "Logo too large", description: "Choose a simpler or smaller image.", variant: "destructive" });
+      toast({ title: t("Logo too large"), description: t("Choose a simpler or smaller image."), variant: "destructive" });
       return;
     }
     form.setValue("companyLogo", dataUrl, { shouldDirty: true, shouldValidate: true });
@@ -197,14 +199,14 @@ export default function Settings() {
       <div>
         <h1 className="flex items-center gap-2 text-2xl font-bold tracking-tight text-foreground">
           <SettingsIcon className="h-6 w-6 text-primary" />
-          System Preferences
+          {t("System Preferences")}
         </h1>
-        <p className="text-sm text-muted-foreground">Global configuration for the VMS environment.</p>
+        <p className="text-sm text-muted-foreground">{t("Global configuration for the VMS environment.")}</p>
       </div>
 
       {isError ? (
         <p role="alert" className="rounded-md border border-destructive/30 bg-destructive/10 p-4 text-sm text-destructive">
-          Unable to load system settings. Refresh the page and try again.
+          {t("Unable to load system settings. Refresh the page and try again.")}
         </p>
       ) : isLoading ? (
         <div className="space-y-6">
@@ -215,50 +217,50 @@ export default function Settings() {
         <form onSubmit={form.handleSubmit(onSubmit)} className="grid gap-6">
           <div className="flex w-fit gap-1 rounded-lg border border-border bg-muted/40 p-1" role="tablist" aria-label="Settings sections">
             <Button type="button" variant={activeTab === "branding" ? "default" : "ghost"} role="tab" aria-selected={activeTab === "branding"} onClick={() => setActiveTab("branding")}>
-              Company Branding
+              {t("Company Branding")}
             </Button>
             <Button type="button" variant={activeTab === "system" ? "default" : "ghost"} role="tab" aria-selected={activeTab === "system"} onClick={() => setActiveTab("system")}>
-              System Settings
+              {t("System Settings")}
             </Button>
           </div>
 
           {activeTab === "branding" ? (
             <Card className="border-border bg-card" role="tabpanel">
               <CardHeader>
-                <CardTitle>Company Branding</CardTitle>
-                <CardDescription>Company name and logo shown on visitor passes.</CardDescription>
+                <CardTitle>{t("Company Branding")}</CardTitle>
+                <CardDescription>{t("Company name and logo shown on visitor passes.")}</CardDescription>
               </CardHeader>
               <CardContent className="space-y-5">
                 <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
                   <div className="space-y-2">
-                    <Label htmlFor="facilityName">Company Name</Label>
+                    <Label htmlFor="facilityName">{t("Company Name")}</Label>
                     <Input id="facilityName" {...form.register("facilityName")} className="bg-background" />
                     {form.formState.errors.facilityName && (
-                      <p className="text-sm text-destructive">{form.formState.errors.facilityName.message}</p>
+                      <p className="text-sm text-destructive">{t(form.formState.errors.facilityName.message ?? "")}</p>
                     )}
                   </div>
                 </div>
                 <div className="space-y-2">
-                  <Label>Company Logo</Label>
+                  <Label>{t("Company Logo")}</Label>
                   <div className="flex flex-col gap-4 sm:flex-row sm:items-center">
                     <div className="flex h-28 w-40 items-center justify-center overflow-hidden rounded-md border border-border bg-white p-2">
                       {companyLogo
                         ? <img src={companyLogo} alt="Company logo preview" className="max-h-full max-w-full object-contain" />
-                        : <span className="text-sm text-muted-foreground">No logo uploaded</span>}
+                        : <span className="text-sm text-muted-foreground">{t("No logo uploaded")}</span>}
                     </div>
                     <div className="flex flex-wrap gap-2">
                       <input ref={logoInputRef} type="file" accept="image/*" className="hidden" onChange={handleLogoUpload} />
                       <Button type="button" variant="outline" onClick={() => logoInputRef.current?.click()}>
-                        <Upload className="mr-2 h-4 w-4" /> Upload Logo
+                        <Upload className="mr-2 h-4 w-4" /> {t("Upload Logo")}
                       </Button>
                       {companyLogo && (
                         <Button type="button" variant="ghost" onClick={() => form.setValue("companyLogo", null, { shouldDirty: true })}>
-                          <X className="mr-2 h-4 w-4" /> Remove Logo
+                          <X className="mr-2 h-4 w-4" /> {t("Remove Logo")}
                         </Button>
                       )}
                     </div>
                   </div>
-                  <p className="text-xs text-muted-foreground">Image files up to 5 MB can be cropped, resized, and rotated before saving.</p>
+                  <p className="text-xs text-muted-foreground">{t("Image files up to 5 MB can be cropped, resized, and rotated before saving.")}</p>
                 </div>
               </CardContent>
             </Card>
@@ -266,15 +268,15 @@ export default function Settings() {
             <>
             <Card className="border-border bg-card" role="tabpanel">
               <CardHeader>
-                <CardTitle>Organization Contact</CardTitle>
-                <CardDescription>Contact details displayed on visitor badges and communications.</CardDescription>
+                <CardTitle>{t("Organization Contact")}</CardTitle>
+                <CardDescription>{t("Contact details displayed on visitor badges and communications.")}</CardDescription>
               </CardHeader>
               <CardContent>
                 <div className="max-w-md space-y-2">
-                  <Label htmlFor="contactEmail">Contact Email</Label>
+                  <Label htmlFor="contactEmail">{t("Contact Email")}</Label>
                   <Input id="contactEmail" {...form.register("contactEmail")} className="bg-background" />
                   {form.formState.errors.contactEmail && (
-                    <p className="text-sm text-destructive">{form.formState.errors.contactEmail.message}</p>
+                    <p className="text-sm text-destructive">{t(form.formState.errors.contactEmail.message ?? "")}</p>
                   )}
                 </div>
               </CardContent>
@@ -282,14 +284,14 @@ export default function Settings() {
 
             <Card className="border-border bg-card">
               <CardHeader>
-                <CardTitle>Security Defaults</CardTitle>
-                <CardDescription>Automated rules for visitor handling.</CardDescription>
+                <CardTitle>{t("Security Defaults")}</CardTitle>
+                <CardDescription>{t("Automated rules for visitor handling.")}</CardDescription>
               </CardHeader>
               <CardContent className="space-y-6">
               <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                 <div className="space-y-0.5">
-                  <Label htmlFor="autoCheckoutEnabled">Auto-Checkout</Label>
-                  <p className="text-sm text-muted-foreground">Automatically check out visitors at the selected time and timezone.</p>
+                  <Label htmlFor="autoCheckoutEnabled">{t("Auto-Checkout")}</Label>
+                  <p className="text-sm text-muted-foreground">{t("Automatically check out visitors at the selected time and timezone.")}</p>
                 </div>
                 <Controller
                   control={form.control}
@@ -302,7 +304,7 @@ export default function Settings() {
 
               <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
                 <div className="space-y-2">
-                  <Label htmlFor="autoCheckoutTime">Automatic Checkout Time</Label>
+                  <Label htmlFor="autoCheckoutTime">{t("Automatic Checkout Time")}</Label>
                   <Input
                     id="autoCheckoutTime"
                     type="time"
@@ -311,30 +313,30 @@ export default function Settings() {
                     className="bg-background"
                   />
                   {form.formState.errors.autoCheckoutTime && (
-                    <p className="text-sm text-destructive">{form.formState.errors.autoCheckoutTime.message}</p>
+                    <p className="text-sm text-destructive">{t(form.formState.errors.autoCheckoutTime.message ?? "")}</p>
                   )}
                 </div>
                 <div className="space-y-2">
-                  <Label htmlFor="timezone">Timezone (IANA)</Label>
+                  <Label htmlFor="timezone">{t("Timezone (IANA)")}</Label>
                   <Input id="timezone" {...form.register("timezone")} placeholder="Asia/Kolkata" className="bg-background" />
                   {form.formState.errors.timezone && (
-                    <p className="text-sm text-destructive">{form.formState.errors.timezone.message}</p>
+                    <p className="text-sm text-destructive">{t(form.formState.errors.timezone.message ?? "")}</p>
                   )}
                 </div>
               </div>
 
               <div className="flex items-center justify-between gap-4 border-t border-border pt-5">
                 <div className="space-y-0.5">
-                  <Label>Require Host Approval</Label>
-                  <p className="text-sm text-muted-foreground">Approval is disabled; visitors are checked in when registered.</p>
+                  <Label>{t("Require Host Approval")}</Label>
+                  <p className="text-sm text-muted-foreground">{t("Approval is disabled; visitors are checked in when registered.")}</p>
                 </div>
-                <Switch checked={false} disabled aria-label="Host approval is disabled" />
+                <Switch checked={false} disabled aria-label={t("Host approval is disabled")} />
               </div>
 
               <div className="flex items-center justify-between gap-4 border-t border-border pt-5">
                 <div className="space-y-0.5">
-                  <Label htmlFor="requirePhoto">Photo Capture Enforced</Label>
-                  <p className="text-sm text-muted-foreground">Require a photo before visitor check-in can be completed.</p>
+                  <Label htmlFor="requirePhoto">{t("Photo Capture Enforced")}</Label>
+                  <p className="text-sm text-muted-foreground">{t("Require a photo before visitor check-in can be completed.")}</p>
                 </div>
                 <Controller
                   control={form.control}
@@ -352,7 +354,7 @@ export default function Settings() {
           <div className="flex justify-end">
             <Button type="submit" disabled={updateMutation.isPending || !settings}>
               <Save className="mr-2 h-4 w-4" />
-              {updateMutation.isPending ? "Saving..." : "Save Configuration"}
+              {updateMutation.isPending ? t("Saving...") : t("Save Configuration")}
             </Button>
           </div>
         </form>
@@ -366,8 +368,8 @@ export default function Settings() {
       >
         <DialogContent className="sm:max-w-2xl">
           <DialogHeader>
-            <DialogTitle>Adjust Company Logo</DialogTitle>
-            <DialogDescription>Drag to position, zoom, or rotate. The 3:1 preview matches the logo space on visitor passes.</DialogDescription>
+            <DialogTitle>{t("Adjust Company Logo")}</DialogTitle>
+            <DialogDescription>{t("Drag to position, zoom, or rotate. The 3:1 preview matches the logo space on visitor passes.")}</DialogDescription>
           </DialogHeader>
           <div
             className="overflow-hidden rounded-md border border-border"
@@ -375,7 +377,7 @@ export default function Settings() {
           >
             <canvas
               ref={cropCanvasRef}
-              aria-label="Company logo crop preview"
+              aria-label={t("Company logo crop preview")}
               className="block aspect-[3/1] w-full touch-none cursor-move"
               onPointerDown={(event) => {
                 event.currentTarget.setPointerCapture(event.pointerId);
@@ -388,7 +390,7 @@ export default function Settings() {
           </div>
           <div className="grid gap-4 sm:grid-cols-[1fr_auto] sm:items-end">
             <div className="space-y-2">
-              <Label htmlFor="logo-zoom">Zoom</Label>
+              <Label htmlFor="logo-zoom">{t("Zoom")}</Label>
               <input
                 id="logo-zoom"
                 type="range"
@@ -401,17 +403,17 @@ export default function Settings() {
               />
             </div>
             <div className="flex gap-2">
-              <Button type="button" variant="outline" aria-label="Rotate logo left" onClick={() => setCropRotation((value) => (value + 270) % 360)}>
+              <Button type="button" variant="outline" aria-label={t("Rotate logo left")} onClick={() => setCropRotation((value) => (value + 270) % 360)}>
                 <RotateCcw className="h-4 w-4" />
               </Button>
-              <Button type="button" variant="outline" aria-label="Rotate logo right" onClick={() => setCropRotation((value) => (value + 90) % 360)}>
+              <Button type="button" variant="outline" aria-label={t("Rotate logo right")} onClick={() => setCropRotation((value) => (value + 90) % 360)}>
                 <RotateCw className="h-4 w-4" />
               </Button>
             </div>
           </div>
           <DialogFooter>
-            <Button type="button" variant="outline" onClick={closeCropDialog}>Cancel</Button>
-            <Button type="button" onClick={saveLogoCrop}>Use Crop</Button>
+            <Button type="button" variant="outline" onClick={closeCropDialog}>{t("Cancel")}</Button>
+            <Button type="button" onClick={saveLogoCrop}>{t("Use Crop")}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

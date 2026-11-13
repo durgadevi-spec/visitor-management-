@@ -15,11 +15,12 @@ const AuthContext = createContext<AuthContextType | undefined>(undefined);
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [token, setToken] = useState<string | null>(() => getToken());
   const [user, setUser] = useState<User | null>(null);
-  const [, setLocation] = useLocation();
+  const [location, setLocation] = useLocation();
+  const isPublicVisitorPass = /^\/visitor\/[^/]+\/?$/.test(location);
 
   const { data: me, isLoading: isLoadingMe, error } = useGetMe({
     query: {
-      enabled: !!token,
+      enabled: !!token && !isPublicVisitorPass,
       retry: (failureCount, queryError) =>
         !(queryError instanceof ApiError && (queryError.status === 401 || queryError.status === 403)) &&
         failureCount < 2,
@@ -46,7 +47,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     clearToken();
     setToken(null);
     setUser(null);
-    setLocation("/login");
+    setLocation("/");
   };
 
   return (

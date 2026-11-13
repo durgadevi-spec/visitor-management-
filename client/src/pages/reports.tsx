@@ -17,10 +17,12 @@ import { Activity, Users, Clock, TrendingUp, CalendarDays, Download, FileSpreads
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { useLanguage } from "@/contexts/LanguageContext";
 
 type SortField = "createdAt" | "name" | "status" | "personToMeet" | "purpose";
 
-const formatVisitorDate = (date: string | null) => date ? new Date(date).toLocaleString() : "";
+const formatVisitorDate = (date: string | null, language: "en" | "ta" = "en") =>
+  date ? new Date(date).toLocaleString(language === "ta" ? "ta-IN" : "en-US") : "";
 const getVisitorDateKey = (date: string) => new Date(date).toISOString().slice(0, 10);
 
 function csvCell(value: string) {
@@ -28,37 +30,24 @@ function csvCell(value: string) {
   return `"${safeValue.replace(/"/g, '""')}"`;
 }
 
-function formatGadgetReport(gadgets: VisitorGadget[]) {
-  if (gadgets.length === 0) return "None recorded";
+function formatGadgetReport(gadgets: VisitorGadget[], t: (text: string) => string, language: "en" | "ta") {
+  if (gadgets.length === 0) return t("None recorded");
   return gadgets.map((gadget) => [
     gadget.name,
-    gadget.makeModel ? `Make/model: ${gadget.makeModel}` : null,
-    gadget.serialNumber ? `Serial: ${gadget.serialNumber}` : null,
-    `Approval: ${gadget.approvalStatus}`,
+    gadget.makeModel ? `${t("Make/model")}: ${gadget.makeModel}` : null,
+    gadget.serialNumber ? `${t("Serial")}: ${gadget.serialNumber}` : null,
+    `${t("Approval")}: ${t(gadget.approvalStatus)}`,
     gadget.returnedAt
-      ? `Returned: Yes (${formatVisitorDate(gadget.returnedAt)})`
-      : "Returned: No",
+      ? `${t("Returned")}: ${t("Yes")} (${formatVisitorDate(gadget.returnedAt, language)})`
+      : `${t("Returned")}: ${t("No")}`,
   ].filter(Boolean).join(" | ")).join("\n");
 }
 
-function downloadVisitorCsv(visitors: Visitor[], gadgetsByVisitor: Map<string, VisitorGadget[]>) {
+function downloadVisitorCsv(visitors: Visitor[], gadgetsByVisitor: Map<string, VisitorGadget[]>, t: (text: string) => string, language: "en" | "ta") {
   const headers = [
-    "Visitor ID",
-    "Name",
-    "Mobile",
-    "Email",
-    "Host",
-    "Purpose",
-    "ID Proof Type",
-    "ID Number",
-    "Registered",
-    "Check-in Time",
-    "Check-out Time",
-    "Duration",
-    "Status",
-    "Blacklisted",
-    "Remarks",
-    "Gadgets",
+    t("Visitor ID"), t("Name"), t("Mobile"), t("Email"), t("Host"), t("Purpose"),
+    t("ID Proof Type"), t("ID Number"), t("Registered"), t("Check-in Time"),
+    t("Check-out Time"), t("Duration"), t("Status"), t("Expected Visit Date"), t("Blacklisted"), t("Remarks"), t("Gadgets"),
   ];
   const rows = visitors.map((visitor) => [
     visitor.visitorId,
@@ -67,16 +56,17 @@ function downloadVisitorCsv(visitors: Visitor[], gadgetsByVisitor: Map<string, V
     visitor.email ?? "",
     visitor.personToMeet,
     visitor.purpose,
-    visitor.idProofType.replace("_", " "),
+    t(visitor.idProofType.replace("_", " ").replace(/\b\w/g, (letter) => letter.toUpperCase())),
     visitor.idNumber,
-    formatVisitorDate(visitor.createdAt),
-    formatVisitorDate(visitor.checkIn),
-    formatVisitorDate(visitor.checkOut),
+    formatVisitorDate(visitor.createdAt, language),
+    formatVisitorDate(visitor.checkIn, language),
+    formatVisitorDate(visitor.checkOut, language),
     visitor.duration ?? "",
-    visitor.status.replace("_", " "),
-    visitor.isBlacklisted ? "Yes" : "No",
+    t(visitor.status.replace("_", " ")),
+    visitor.scheduledFor ? formatVisitorDate(`${visitor.scheduledFor}T00:00:00`, language) : "",
+    visitor.isBlacklisted ? t("Yes") : t("No"),
     visitor.remarks ?? "",
-    formatGadgetReport(gadgetsByVisitor.get(visitor.id) ?? []),
+    formatGadgetReport(gadgetsByVisitor.get(visitor.id) ?? [], t, language),
   ]);
   const csv = [headers, ...rows].map((row) => row.map(csvCell).join(",")).join("\r\n");
   const url = URL.createObjectURL(new Blob(["\uFEFF", csv], { type: "text/csv;charset=utf-8" }));
@@ -87,7 +77,7 @@ function downloadVisitorCsv(visitors: Visitor[], gadgetsByVisitor: Map<string, V
   URL.revokeObjectURL(url);
 }
 
-function downloadVisitorPdf(visitors: Visitor[], gadgetsByVisitor: Map<string, VisitorGadget[]>, period: string, startDate: string, endDate: string) {
+function downloadVisitorPdf(visitors: Visitor[], gadgetsByVisitor: Map<string, VisitorGadget[]>, period: string, startDate: string, endDate: string, t: (text: string) => string, language: "en" | "ta") {
   const doc = new jsPDF({ orientation: "landscape", unit: "mm", format: "a4" });
   const margin = 12;
   const pageWidth = doc.internal.pageSize.getWidth();
@@ -99,30 +89,33 @@ function downloadVisitorPdf(visitors: Visitor[], gadgetsByVisitor: Map<string, V
 
   doc.setFont("helvetica", "bold");
   doc.setFontSize(16);
-  doc.text("Visitor Report", margin, y);
+  doc.text(t("Visitor Report"), margin, y);
   y += 7;
   doc.setFont("helvetica", "normal");
   doc.setFontSize(9);
-  doc.text(`Chart period: ${period} | Date range: ${startDate || "Any"} to ${endDate || "Any"} | Visitors: ${visitors.length}`, margin, y);
+  doc.text(`${t("Chart period")}: ${t(period)} | ${t("Date range")}: ${startDate || t("Any")} ${t("to")} ${endDate || t("Any")} | ${t("Visitors")}: ${visitors.length}`, margin, y);
   y += 12;
 
   if (visitors.length === 0) {
-    doc.text("No visitors match the selected filters.", margin, y + 2);
+    doc.text(t("No visitors match the selected filters."), margin, y + 2);
   } else {
     for (const visitor of visitors) {
       const details: [string, string][] = [
-        ["Mobile", visitor.mobile],
-        ["Email", visitor.email || "N/A"],
-        ["Host", visitor.personToMeet],
-        ["Purpose", visitor.purpose],
-        ["ID Proof", `${visitor.idProofType.replace("_", " ")}: ${visitor.idNumber}`],
-        ["Registered", formatVisitorDate(visitor.createdAt)],
-        ["Check-in", formatVisitorDate(visitor.checkIn) || "Not checked in"],
-        ["Check-out", formatVisitorDate(visitor.checkOut) || "Not checked out"],
-        ["Duration", visitor.duration || "N/A"],
-        ["Status", visitor.status.replace("_", " ")],
-        ["Blacklisted", visitor.isBlacklisted ? "Yes" : "No"],
-        ["Remarks", visitor.remarks || "None"],
+        [t("Mobile"), visitor.mobile],
+        [t("Email"), visitor.email || t("N/A")],
+        [t("Host"), visitor.personToMeet],
+        [t("Purpose"), visitor.purpose],
+        [t("ID Proof"), `${t(visitor.idProofType.replace("_", " "))}: ${visitor.idNumber}`],
+        [t("Registered"), formatVisitorDate(visitor.createdAt, language)],
+        [t("Check-in"), formatVisitorDate(visitor.checkIn, language) || t("Not checked in")],
+        [t("Check-out"), formatVisitorDate(visitor.checkOut, language) || t("Not checked out")],
+        [t("Duration"), visitor.duration || t("N/A")],
+        [t("Status"), t(visitor.status.replace("_", " "))],
+        ...(visitor.scheduledFor
+          ? [[t("Expected Visit Date"), formatVisitorDate(`${visitor.scheduledFor}T00:00:00`, language)] as [string, string]]
+          : []),
+        [t("Blacklisted"), visitor.isBlacklisted ? t("Yes") : t("No")],
+        [t("Remarks"), visitor.remarks || t("None")],
       ];
       const visitorGadgets = gadgetsByVisitor.get(visitor.id) ?? [];
       const detailLines = details.map(([label, value]) => {
@@ -170,21 +163,21 @@ function downloadVisitorPdf(visitors: Visitor[], gadgetsByVisitor: Map<string, V
         ? visitorGadgets.map((gadget, index) => {
           const itemDetails = [
             gadget.name,
-            gadget.makeModel ? `Make/model: ${gadget.makeModel}` : null,
-            gadget.serialNumber ? `Serial: ${gadget.serialNumber}` : null,
-            `Approval: ${gadget.approvalStatus}`,
-            gadget.returnedAt ? `Returned: Yes (${formatVisitorDate(gadget.returnedAt)})` : "Returned: No",
+            gadget.makeModel ? `${t("Make/model")}: ${gadget.makeModel}` : null,
+            gadget.serialNumber ? `${t("Serial")}: ${gadget.serialNumber}` : null,
+            `${t("Approval")}: ${t(gadget.approvalStatus)}`,
+            gadget.returnedAt ? `${t("Returned")}: ${t("Yes")} (${formatVisitorDate(gadget.returnedAt, language)})` : `${t("Returned")}: ${t("No")}`,
           ].filter(Boolean).join(" | ");
           return doc.splitTextToSize(`${index + 1}. ${itemDetails}`, contentWidth - 4) as string[];
         })
-        : ["None recorded"];
+        : [t("None recorded")];
       doc.setFont("helvetica", "bold");
       doc.setFontSize(8);
       if (y + 5 > pageHeight - margin) {
         doc.addPage();
         y = margin;
       }
-      doc.text("Gadgets Carried:", margin + 2, y);
+      doc.text(`${t("Gadgets Carried")}:`, margin + 2, y);
       y += 4;
       doc.setFont("helvetica", "normal");
       gadgetLines.forEach((lines) => {
@@ -193,7 +186,7 @@ function downloadVisitorPdf(visitors: Visitor[], gadgetsByVisitor: Map<string, V
           doc.addPage();
           y = margin;
           doc.setFont("helvetica", "bold");
-          doc.text("Gadgets Carried (continued):", margin + 2, y);
+          doc.text(`${t("Gadgets Carried (continued)")}:`, margin + 2, y);
           y += 4;
           doc.setFont("helvetica", "normal");
         }
@@ -208,6 +201,7 @@ function downloadVisitorPdf(visitors: Visitor[], gadgetsByVisitor: Map<string, V
 }
 
 export default function Reports() {
+  const { t, language } = useLanguage();
   const [period, setPeriod] = useState<"daily" | "weekly" | "monthly">("daily");
   const [startDate, setStartDate] = useState("");
   const [endDate, setEndDate] = useState("");
@@ -268,21 +262,21 @@ export default function Reports() {
   const visitorRecords = (
     <Card className="min-w-0 border-border bg-card">
       <CardHeader>
-        <CardTitle className="text-lg">Visitor Records</CardTitle>
+        <CardTitle className="text-lg">{t("Visitor Records")}</CardTitle>
         <CardDescription>
-          {visitorsLoading ? "Loading visitor records..." : `${filteredVisitors.length} record${filteredVisitors.length === 1 ? "" : "s"} match your filters.`}
-        {gadgetsError && <span className="mt-1 block text-destructive" role="alert">Gadget details could not be loaded. Exports are disabled to avoid incomplete reports.</span>}
+          {visitorsLoading ? t("Loading visitor records...") : `${filteredVisitors.length} ${t("records match your filters.")}`}
+        {gadgetsError && <span className="mt-1 block text-destructive" role="alert">{t("Gadget details could not be loaded. Exports are disabled to avoid incomplete reports.")}</span>}
         </CardDescription>
       </CardHeader>
       <CardContent className="p-0">
         <Table className="min-w-[700px]">
           <TableHeader className="bg-muted/50">
             <TableRow className="border-border hover:bg-transparent">
-              <TableHead>Visitor</TableHead>
-              <TableHead>Host</TableHead>
-              <TableHead>Purpose</TableHead>
-              <TableHead>Registered</TableHead>
-              <TableHead>Status</TableHead>
+              <TableHead>{t("Visitor")}</TableHead>
+              <TableHead>{t("Host")}</TableHead>
+              <TableHead>{t("Purpose")}</TableHead>
+              <TableHead>{t("Registered")}</TableHead>
+              <TableHead>{t("Status")}</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -299,7 +293,7 @@ export default function Reports() {
             ) : filteredVisitors.length === 0 ? (
               <TableRow className="border-border hover:bg-transparent">
                 <TableCell colSpan={5} className="py-8 text-center text-muted-foreground">
-                  No visitor records match the selected filters.
+                  {t("No visitor records match the selected filters.")}
                 </TableCell>
               </TableRow>
             ) : (
@@ -311,9 +305,9 @@ export default function Reports() {
                   </TableCell>
                   <TableCell>{visitor.personToMeet}</TableCell>
                   <TableCell className="max-w-52 truncate" title={visitor.purpose}>{visitor.purpose}</TableCell>
-                  <TableCell className="whitespace-nowrap text-sm text-muted-foreground">{formatVisitorDate(visitor.createdAt)}</TableCell>
+                  <TableCell className="whitespace-nowrap text-sm text-muted-foreground">{formatVisitorDate(visitor.createdAt, language)}</TableCell>
                   <TableCell>
-                    <Badge variant="outline" className="capitalize">{visitor.status.replace("_", " ")}</Badge>
+                    <Badge variant="outline" className="capitalize">{t(visitor.status.replace("_", " "))}</Badge>
                   </TableCell>
                 </TableRow>
               ))
@@ -328,35 +322,43 @@ export default function Reports() {
     <div className="space-y-6 print:bg-white print:text-black">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight text-foreground">Intelligence & Analytics</h1>
-          <p className="text-sm text-muted-foreground">Historical traffic and demographic insights.</p>
+          <h1 className="text-2xl font-bold tracking-tight text-foreground">{t("Intelligence & Analytics")}</h1>
+          <p className="text-sm text-muted-foreground">{t("Historical traffic and demographic insights.")}</p>
         </div>
         <div className="flex flex-wrap items-center gap-2 no-print">
           <Button
             type="button"
             variant="outline"
-            onClick={() => downloadVisitorCsv(filteredVisitors, gadgetsByVisitor)}
+            onClick={() => downloadVisitorCsv(filteredVisitors, gadgetsByVisitor, t, language)}
             disabled={visitorsLoading || gadgetsLoading || gadgetsError}
           >
-            <Download className="h-4 w-4" /> Excel (CSV)
+            <Download className="h-4 w-4" /> {t("Excel (CSV)")}
           </Button>
           <Button
             type="button"
             variant="outline"
-            onClick={() => downloadVisitorPdf(filteredVisitors, gadgetsByVisitor, period, startDate, endDate)}
+            onClick={() => downloadVisitorPdf(
+              filteredVisitors,
+              gadgetsByVisitor,
+              period,
+              startDate,
+              endDate,
+              language === "ta" ? (text) => text : t,
+              language === "ta" ? "en" : language,
+            )}
             disabled={visitorsLoading || gadgetsLoading || gadgetsError}
           >
-            <FileText className="h-4 w-4" /> Download PDF
+            <FileText className="h-4 w-4" /> {t("Download PDF")}
           </Button>
           <div className="w-48">
             <Select value={period} onValueChange={(value) => setPeriod(value as typeof period)}>
               <SelectTrigger className="bg-card border-border">
-                <SelectValue placeholder="Chart period" />
+                <SelectValue placeholder={t("Chart period")} />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="daily">Today</SelectItem>
-                <SelectItem value="weekly">Last 7 Days</SelectItem>
-                <SelectItem value="monthly">Last 30 Days</SelectItem>
+                <SelectItem value="daily">{t("Today")}</SelectItem>
+                <SelectItem value="weekly">{t("Last 7 Days")}</SelectItem>
+                <SelectItem value="monthly">{t("Last 30 Days")}</SelectItem>
               </SelectContent>
             </Select>
           </div>
@@ -366,28 +368,28 @@ export default function Reports() {
       <Card className="no-print border-border bg-card">
         <CardHeader className="pb-3">
           <CardTitle className="flex items-center gap-2 text-base">
-            <Search className="h-4 w-4 text-primary" /> Visitor Filters
+            <Search className="h-4 w-4 text-primary" /> {t("Visitor Filters")}
           </CardTitle>
-          <CardDescription>Filter the visitor records below. Exports use the same filtered results.</CardDescription>
+          <CardDescription>{t("Filter the visitor records below. Exports use the same filtered results.")}</CardDescription>
         </CardHeader>
         <CardContent className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-6">
           <div className="relative sm:col-span-2 xl:col-span-2">
             <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
             <Input
-              aria-label="Search visitors"
-              placeholder="Search name, visitor ID, host, purpose..."
+              aria-label={t("Search visitors")}
+              placeholder={t("Search name, visitor ID, host, purpose...")}
               className="bg-background pl-9"
               value={search}
               onChange={(event) => setSearch(event.target.value)}
             />
           </div>
           <div>
-            <label htmlFor="report-start-date" className="sr-only">Start date</label>
+            <label htmlFor="report-start-date" className="sr-only">{t("Start date")}</label>
             <div className="flex h-9 items-center gap-2 rounded-md border border-input bg-background px-3">
               <CalendarDays className="h-4 w-4 shrink-0 text-muted-foreground" />
               <input
                 id="report-start-date"
-                aria-label="Start date"
+                aria-label={t("Start date")}
                 type="date"
                 max={endDate || undefined}
                 value={startDate}
@@ -397,12 +399,12 @@ export default function Reports() {
             </div>
           </div>
           <div>
-            <label htmlFor="report-end-date" className="sr-only">End date</label>
+            <label htmlFor="report-end-date" className="sr-only">{t("End date")}</label>
             <div className="flex h-9 items-center gap-2 rounded-md border border-input bg-background px-3">
               <CalendarDays className="h-4 w-4 shrink-0 text-muted-foreground" />
               <input
                 id="report-end-date"
-                aria-label="End date"
+                aria-label={t("End date")}
                 type="date"
                 min={startDate || undefined}
                 value={endDate}
@@ -413,36 +415,37 @@ export default function Reports() {
           </div>
           <Select value={statusFilter} onValueChange={setStatusFilter}>
             <SelectTrigger className="bg-background">
-              <SelectValue placeholder="All statuses" />
+              <SelectValue placeholder={t("All statuses")} />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="all">All statuses</SelectItem>
-              <SelectItem value="pending">Pending</SelectItem>
-              <SelectItem value="approved">Approved</SelectItem>
-              <SelectItem value="checked_in">Checked in</SelectItem>
-              <SelectItem value="checked_out">Checked out</SelectItem>
-              <SelectItem value="rejected">Rejected</SelectItem>
+              <SelectItem value="all">{t("All statuses")}</SelectItem>
+              <SelectItem value="pending">{t("Pending")}</SelectItem>
+              <SelectItem value="approved">{t("Approved")}</SelectItem>
+              <SelectItem value="checked_in">{t("Checked In")}</SelectItem>
+              <SelectItem value="checked_out">{t("Checked Out")}</SelectItem>
+              <SelectItem value="rejected">{t("Rejected")}</SelectItem>
+              <SelectItem value="scheduled">{t("Scheduled")}</SelectItem>
             </SelectContent>
           </Select>
           <div className="flex gap-2">
             <Select value={sortField} onValueChange={(value) => setSortField(value as SortField)}>
               <SelectTrigger className="min-w-0 flex-1 bg-background">
-                <SelectValue placeholder="Sort by" />
+                <SelectValue placeholder={t("Sort by")} />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="createdAt">Date</SelectItem>
-                <SelectItem value="name">Name</SelectItem>
-                <SelectItem value="status">Status</SelectItem>
-                <SelectItem value="personToMeet">Host</SelectItem>
-                <SelectItem value="purpose">Purpose</SelectItem>
+                <SelectItem value="createdAt">{t("Date")}</SelectItem>
+                <SelectItem value="name">{t("Name")}</SelectItem>
+                <SelectItem value="status">{t("Status")}</SelectItem>
+                <SelectItem value="personToMeet">{t("Host")}</SelectItem>
+                <SelectItem value="purpose">{t("Purpose")}</SelectItem>
               </SelectContent>
             </Select>
             <Button
               type="button"
               variant="outline"
               size="icon"
-              aria-label={`Sort ${sortDirection === "asc" ? "descending" : "ascending"}`}
-              title={`Currently ${sortDirection === "asc" ? "ascending" : "descending"}`}
+              aria-label={`${t("Sort")} ${t(sortDirection === "asc" ? "descending" : "ascending")}`}
+              title={`${t("Currently")} ${t(sortDirection === "asc" ? "ascending" : "descending")}`}
               onClick={() => setSortDirection((direction) => direction === "asc" ? "desc" : "asc")}
             >
               <ArrowUpDown className="h-4 w-4" />
@@ -466,7 +469,7 @@ export default function Reports() {
           <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
             <Card className="bg-card border-border">
               <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-                <CardTitle className="text-sm font-medium uppercase tracking-wider text-muted-foreground">Total Period Traffic</CardTitle>
+                <CardTitle className="text-sm font-medium uppercase tracking-wider text-muted-foreground">{t("Total Period Traffic")}</CardTitle>
                 <Users className="h-4 w-4 text-primary" />
               </CardHeader>
               <CardContent>
@@ -475,7 +478,7 @@ export default function Reports() {
             </Card>
             <Card className="bg-card border-border">
               <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-                <CardTitle className="text-sm font-medium uppercase tracking-wider text-muted-foreground">Avg / Day</CardTitle>
+                <CardTitle className="text-sm font-medium uppercase tracking-wider text-muted-foreground">{t("Avg / Day")}</CardTitle>
                 <Activity className="h-4 w-4 text-blue-400" />
               </CardHeader>
               <CardContent>
@@ -484,7 +487,7 @@ export default function Reports() {
             </Card>
             <Card className="bg-card border-border">
               <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-                <CardTitle className="text-sm font-medium uppercase tracking-wider text-muted-foreground">Peak Volume Day</CardTitle>
+                <CardTitle className="text-sm font-medium uppercase tracking-wider text-muted-foreground">{t("Peak Volume Day")}</CardTitle>
                 <TrendingUp className="h-4 w-4 text-green-400" />
               </CardHeader>
               <CardContent>
@@ -493,7 +496,7 @@ export default function Reports() {
             </Card>
             <Card className="bg-card border-border">
               <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-                <CardTitle className="text-sm font-medium uppercase tracking-wider text-muted-foreground">Period Filter</CardTitle>
+                <CardTitle className="text-sm font-medium uppercase tracking-wider text-muted-foreground">{t("Period Filter")}</CardTitle>
                 <Clock className="h-4 w-4 text-yellow-400" />
               </CardHeader>
               <CardContent>
@@ -507,7 +510,7 @@ export default function Reports() {
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
             <Card className="bg-card border-border">
               <CardHeader>
-                <CardTitle className="text-lg">Visitor Traffic Timeline</CardTitle>
+                <CardTitle className="text-lg">{t("Visitor Traffic Timeline")}</CardTitle>
               </CardHeader>
               <CardContent>
                 <div className="h-[300px]">
@@ -529,7 +532,7 @@ export default function Reports() {
 
             <Card className="bg-card border-border">
               <CardHeader>
-                <CardTitle className="text-lg">Hourly Distribution</CardTitle>
+                <CardTitle className="text-lg">{t("Hourly Distribution")}</CardTitle>
               </CardHeader>
               <CardContent>
                 <div className="h-[300px]">
@@ -551,11 +554,11 @@ export default function Reports() {
 
             <Card className="bg-card border-border lg:col-span-2">
               <CardHeader>
-                <CardTitle className="text-lg">Demographics & Outcomes</CardTitle>
+                <CardTitle className="text-lg">{t("Demographics & Outcomes")}</CardTitle>
               </CardHeader>
               <CardContent className="grid grid-cols-1 md:grid-cols-2 gap-8">
                 <div className="h-[250px] flex flex-col items-center">
-                  <h3 className="text-sm font-medium text-muted-foreground uppercase tracking-widest mb-4">Purpose Breakdown</h3>
+                  <h3 className="text-sm font-medium text-muted-foreground uppercase tracking-widest mb-4">{t("Purpose Breakdown")}</h3>
                   <ResponsiveContainer width="100%" height="100%">
                     <PieChart>
                       <Pie
@@ -577,7 +580,7 @@ export default function Reports() {
                   </ResponsiveContainer>
                 </div>
                 <div className="h-[250px] flex flex-col items-center">
-                  <h3 className="text-sm font-medium text-muted-foreground uppercase tracking-widest mb-4">Status Outcomes</h3>
+                  <h3 className="text-sm font-medium text-muted-foreground uppercase tracking-widest mb-4">{t("Status Outcomes")}</h3>
                   <ResponsiveContainer width="100%" height="100%">
                     <PieChart>
                       <Pie

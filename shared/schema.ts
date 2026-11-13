@@ -1,4 +1,4 @@
-import { pgTable, text, serial, timestamp, boolean, integer } from "drizzle-orm/pg-core";
+import { pgTable, text, serial, timestamp, boolean, integer, date } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod/v4";
 
@@ -35,6 +35,7 @@ export const visitorsTable = pgTable("visitors", {
   photoUrl: text("photo_url"),
   qrCode: text("qr_code"),
   status: text("status").notNull().default("pending"), // pending|approved|checked_in|checked_out|rejected
+  scheduledFor: date("scheduled_for", { mode: "string" }),
   checkIn: timestamp("check_in", { withTimezone: true }),
   checkOut: timestamp("check_out", { withTimezone: true }),
   isBlacklisted: boolean("is_blacklisted").notNull().default(false),
@@ -147,6 +148,13 @@ export const CreateVisitorBody = z.object({
   idProofType: z.enum(["aadhar", "pan", "passport", "driving_license", "voter_id"]),
   idNumber: z.string(),
   photoUrl: z.string().nullish(),
+  scheduledFor: z.string()
+    .regex(/^\d{4}-\d{2}-\d{2}$/)
+    .refine((value) => {
+      const date = new Date(`${value}T00:00:00.000Z`);
+      return !Number.isNaN(date.getTime()) && date.toISOString().slice(0, 10) === value;
+    }, "Enter a valid scheduled visit date")
+    .optional(),
   gadgets: z.array(z.object({
     name: z.string().trim().min(1).max(150),
     makeModel: z.string().trim().max(150).nullish(),
@@ -164,6 +172,7 @@ export const GetVisitorsQueryParams = z.object({
       z.literal("checked_in"),
       z.literal("checked_out"),
       z.literal("rejected"),
+      z.literal("scheduled"),
       z.literal(null),
     ])
     .nullish(),

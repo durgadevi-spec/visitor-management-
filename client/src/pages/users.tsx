@@ -12,7 +12,6 @@ import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Shield, Trash2, PlusCircle, UserCheck, Pencil } from "lucide-react";
-import { format } from "date-fns";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useQueryClient } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
@@ -26,6 +25,7 @@ import type { User } from "@/lib/api-client";
 import { useAuth } from "@/contexts/AuthContext";
 import { Redirect } from "wouter";
 import { motion, useReducedMotion } from "framer-motion";
+import { useLanguage } from "@/contexts/LanguageContext";
 
 const userSchema = z.object({
   name: z.string().min(2, "Name required"),
@@ -43,6 +43,7 @@ const editUserSchema = z.object({
 
 export default function Users() {
   const reduceMotion = useReducedMotion();
+  const { t, formatDate } = useLanguage();
   const [open, setOpen] = useState(false);
   const [editingUser, setEditingUser] = useState<User | null>(null);
   const queryClient = useQueryClient();
@@ -72,13 +73,13 @@ export default function Users() {
   const createMutation = useCreateUser({
     mutation: {
       onSuccess: () => {
-        toast({ title: "User Created", description: "Operator access provisioned." });
+        toast({ title: t("User Created"), description: t("Operator access provisioned.") });
         queryClient.invalidateQueries({ queryKey: getGetUsersQueryKey() });
         setOpen(false);
         form.reset();
       },
       onError: (err: any) => {
-        toast({ variant: "destructive", title: "Error", description: err.error });
+        toast({ variant: "destructive", title: t("Error"), description: t(err.error) });
       }
     }
   });
@@ -86,7 +87,7 @@ export default function Users() {
   const deleteMutation = useDeleteUser({
     mutation: {
       onSuccess: () => {
-        toast({ title: "User Removed", description: "Operator access revoked." });
+        toast({ title: t("User Removed"), description: t("Operator access revoked.") });
         queryClient.invalidateQueries({ queryKey: getGetUsersQueryKey() });
       }
     }
@@ -95,13 +96,13 @@ export default function Users() {
   const updateMutation = useUpdateUser({
     mutation: {
       onSuccess: () => {
-        toast({ title: "Employee Updated", description: "Employee details have been saved." });
+        toast({ title: t("Employee Updated"), description: t("Employee details have been saved.") });
         queryClient.invalidateQueries({ queryKey: getGetUsersQueryKey() });
         setEditingUser(null);
         editForm.reset();
       },
       onError: (error) => {
-        toast({ variant: "destructive", title: "Update Failed", description: error.error });
+        toast({ variant: "destructive", title: t("Update Failed"), description: t(error.error) });
       }
     }
   });
@@ -129,7 +130,7 @@ export default function Users() {
   };
 
   const handleDelete = (id: number) => {
-    if (confirm("Revoke access for this operator?")) {
+    if (confirm(t("Revoke access for this operator?"))) {
       deleteMutation.mutate({ id });
     }
   };
@@ -153,13 +154,13 @@ export default function Users() {
         <div>
           <h1 className="text-2xl font-bold tracking-tight text-foreground flex items-center gap-2">
             <Shield className="h-6 w-6 text-primary" />
-            Access Management
+            {t("Access Management")}
           </h1>
-          <p className="text-sm text-muted-foreground">Manage operators and clearance levels.</p>
+          <p className="text-sm text-muted-foreground">{t("Manage operators and clearance levels.")}</p>
         </div>
         <motion.img
           src="/users-team-illustration.png"
-          alt="Team of facility operators"
+          alt={t("Team of facility operators")}
           className="h-24 w-full object-contain sm:h-20 sm:w-56"
           initial={reduceMotion ? false : { opacity: 0, x: 8 }}
           animate={reduceMotion ? { opacity: 1 } : { opacity: 1, y: [0, -2, 0] }}
@@ -170,39 +171,39 @@ export default function Users() {
         <Dialog open={open} onOpenChange={setOpen}>
           <DialogTrigger asChild>
             <Button variant="default" className="bg-primary hover:bg-primary/90 text-primary-foreground">
-              <PlusCircle className="mr-2 h-4 w-4" /> Provision Operator
+              <PlusCircle className="mr-2 h-4 w-4" /> {t("Provision Operator")}
             </Button>
           </DialogTrigger>
           <DialogContent className="sm:max-w-md bg-card border-border">
             <DialogHeader>
-              <DialogTitle>Provision New Operator</DialogTitle>
+              <DialogTitle>{t("Provision New Operator")}</DialogTitle>
             </DialogHeader>
             <Form {...form}>
               <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
                 <FormField control={form.control} name="name" render={({ field }) => (
                   <FormItem>
-                    <FormLabel>Full Name</FormLabel>
+                    <FormLabel>{t("Full Name")}</FormLabel>
                     <FormControl><Input {...field} className="bg-background" /></FormControl>
                     <FormMessage />
                   </FormItem>
                 )} />
                 <FormField control={form.control} name="email" render={({ field }) => (
                   <FormItem>
-                    <FormLabel>Email Address</FormLabel>
+                    <FormLabel>{t("Email Address")}</FormLabel>
                     <FormControl><Input {...field} type="email" className="bg-background" /></FormControl>
                     <FormMessage />
                   </FormItem>
                 )} />
                 <FormField control={form.control} name="password" render={({ field }) => (
                   <FormItem>
-                    <FormLabel>Initial Password</FormLabel>
+                    <FormLabel>{t("Initial Password")}</FormLabel>
                     <FormControl><Input {...field} type="password" className="bg-background" /></FormControl>
                     <FormMessage />
                   </FormItem>
                 )} />
                 <FormField control={form.control} name="role" render={({ field }) => (
                   <FormItem>
-                    <FormLabel>Clearance Level</FormLabel>
+                    <FormLabel>{t("Clearance Level")}</FormLabel>
                     <Select onValueChange={field.onChange} defaultValue={field.value}>
                       <FormControl>
                         <SelectTrigger className="bg-background">
@@ -210,16 +211,16 @@ export default function Users() {
                         </SelectTrigger>
                       </FormControl>
                       <SelectContent>
-                        <SelectItem value="admin">Administrator</SelectItem>
-                        <SelectItem value="security">Security Officer</SelectItem>
-                        <SelectItem value="employee">Employee / Host</SelectItem>
+                        <SelectItem value="admin">{t("Administrator")}</SelectItem>
+                        <SelectItem value="security">{t("Security Officer")}</SelectItem>
+                        <SelectItem value="employee">{t("Employee / Host")}</SelectItem>
                       </SelectContent>
                     </Select>
                     <FormMessage />
                   </FormItem>
                 )} />
                 <Button type="submit" className="w-full bg-primary" disabled={createMutation.isPending}>
-                  {createMutation.isPending ? "Provisioning..." : "Create Operator"}
+                  {createMutation.isPending ? t("Provisioning...") : t("Create Operator")}
                 </Button>
               </form>
             </Form>
@@ -238,35 +239,35 @@ export default function Users() {
       >
         <DialogContent className="border-border bg-card sm:max-w-md">
           <DialogHeader>
-            <DialogTitle>Edit Employee</DialogTitle>
+            <DialogTitle>{t("Edit Employee")}</DialogTitle>
           </DialogHeader>
           <Form {...editForm}>
             <form onSubmit={editForm.handleSubmit(onEditSubmit)} className="space-y-4">
               <FormField control={editForm.control} name="name" render={({ field }) => (
                 <FormItem>
-                  <FormLabel>Full Name</FormLabel>
+                  <FormLabel>{t("Full Name")}</FormLabel>
                   <FormControl><Input {...field} className="bg-background" /></FormControl>
                   <FormMessage />
                 </FormItem>
               )} />
               <FormField control={editForm.control} name="email" render={({ field }) => (
                 <FormItem>
-                  <FormLabel>Email Address</FormLabel>
+                  <FormLabel>{t("Email Address")}</FormLabel>
                   <FormControl><Input {...field} type="email" className="bg-background" /></FormControl>
                   <FormMessage />
                 </FormItem>
               )} />
               <FormField control={editForm.control} name="role" render={({ field }) => (
                 <FormItem>
-                  <FormLabel>Role</FormLabel>
+                  <FormLabel>{t("Role")}</FormLabel>
                   <Select onValueChange={field.onChange} value={field.value}>
                     <FormControl>
                       <SelectTrigger className="bg-background"><SelectValue /></SelectTrigger>
                     </FormControl>
                     <SelectContent>
-                      <SelectItem value="employee">Employee / Host</SelectItem>
-                      <SelectItem value="security">Security Officer</SelectItem>
-                      <SelectItem value="admin">Administrator</SelectItem>
+                      <SelectItem value="employee">{t("Employee / Host")}</SelectItem>
+                      <SelectItem value="security">{t("Security Officer")}</SelectItem>
+                      <SelectItem value="admin">{t("Administrator")}</SelectItem>
                     </SelectContent>
                   </Select>
                   <FormMessage />
@@ -274,13 +275,13 @@ export default function Users() {
               )} />
               <FormField control={editForm.control} name="password" render={({ field }) => (
                 <FormItem>
-                  <FormLabel>New Password (Optional)</FormLabel>
-                  <FormControl><Input {...field} type="password" autoComplete="new-password" placeholder="Leave blank to keep current password" className="bg-background" /></FormControl>
+                  <FormLabel>{t("New Password (Optional)")}</FormLabel>
+                  <FormControl><Input {...field} type="password" autoComplete="new-password" placeholder={t("Leave blank to keep current password")} className="bg-background" /></FormControl>
                   <FormMessage />
                 </FormItem>
               )} />
               <Button type="submit" className="w-full bg-primary" disabled={updateMutation.isPending}>
-                {updateMutation.isPending ? "Saving Changes..." : "Save Changes"}
+                {updateMutation.isPending ? t("Saving Changes...") : t("Save Changes")}
               </Button>
             </form>
           </Form>
@@ -292,10 +293,10 @@ export default function Users() {
           <Table>
             <TableHeader className="bg-muted/50">
               <TableRow className="border-border hover:bg-transparent">
-                <TableHead>Operator</TableHead>
-                <TableHead>Clearance</TableHead>
-                <TableHead>Provisioned On</TableHead>
-                <TableHead className="text-right">Actions</TableHead>
+                <TableHead>{t("Operator")}</TableHead>
+                <TableHead>{t("Clearance")}</TableHead>
+                <TableHead>{t("Provisioned On")}</TableHead>
+                <TableHead className="text-right">{t("Actions")}</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -324,11 +325,11 @@ export default function Users() {
                     </TableCell>
                     <TableCell>
                       <Badge variant="outline" className={`uppercase tracking-wider text-[10px] ${getRoleColor(u.role)}`}>
-                        {u.role}
+                        {t(u.role === "admin" ? "Administrator" : u.role === "security" ? "Security Officer" : "Employee / Host")}
                       </Badge>
                     </TableCell>
                     <TableCell className="text-sm font-mono text-muted-foreground">
-                      {format(new Date(u.createdAt), "yyyy-MM-dd HH:mm")}
+                      {formatDate(new Date(u.createdAt), "yyyy-MM-dd HH:mm")}
                     </TableCell>
                     <TableCell className="text-right">
                       <Button

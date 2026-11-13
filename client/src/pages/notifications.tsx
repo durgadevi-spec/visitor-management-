@@ -7,12 +7,13 @@ import {
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Bell, Check, CheckCircle2, Info, AlertTriangle, ShieldAlert } from "lucide-react";
-import { format } from "date-fns";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useQueryClient } from "@tanstack/react-query";
 import { cn } from "@/lib/utils";
+import { useLanguage } from "@/contexts/LanguageContext";
 
 export default function Notifications() {
+  const { t, formatDate } = useLanguage();
   const queryClient = useQueryClient();
 
   const { data: notifications, isLoading } = useGetNotifications({
@@ -63,13 +64,13 @@ export default function Notifications() {
         <div>
           <h1 className="text-2xl font-bold tracking-tight text-foreground flex items-center gap-2">
             <Bell className="h-6 w-6 text-primary" />
-            Alert Center
+            {t("Alert Center")}
           </h1>
-          <p className="text-sm text-muted-foreground">System notifications and action items.</p>
+          <p className="text-sm text-muted-foreground">{t("System notifications and action items.")}</p>
         </div>
         {unreadCount > 0 && (
           <Button variant="outline" size="sm" onClick={handleMarkAll} disabled={markAllReadMutation.isPending}>
-            <Check className="mr-2 h-4 w-4" /> Mark All Read
+            <Check className="mr-2 h-4 w-4" /> {t("Mark All Read")}
           </Button>
         )}
       </div>
@@ -89,7 +90,7 @@ export default function Notifications() {
           ) : notifications?.length === 0 ? (
             <div className="p-12 text-center text-muted-foreground flex flex-col items-center">
               <Bell className="h-12 w-12 text-muted mb-4 opacity-50" />
-              <p>No notifications at this time.</p>
+              <p>{t("No notifications at this time.")}</p>
             </div>
           ) : (
             notifications?.map((notification) => (
@@ -107,10 +108,10 @@ export default function Notifications() {
                 </div>
                 <div className="flex-1">
                   <p className={cn("text-sm", !notification.readStatus ? "font-medium text-foreground" : "text-muted-foreground")}>
-                    {notification.message}
+                    {t(notification.message)}
                   </p>
                   <p className="text-xs text-muted-foreground/70 mt-1 font-mono">
-                    {format(new Date(notification.createdAt), "MMM d, HH:mm:ss")}
+                    {formatDate(new Date(notification.createdAt), "MMM d, HH:mm:ss")}
                   </p>
                 </div>
                 {!notification.readStatus && (

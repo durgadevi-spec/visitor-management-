@@ -3,22 +3,24 @@ import { Link, useLocation } from "wouter";
 import { useAuth } from "@/contexts/AuthContext";
 import { cn } from "@/lib/utils";
 import { useGetNotifications } from "@/lib/api-client";
+import { useLanguage } from "@/contexts/LanguageContext";
 
 export function Sidebar() {
   const [location] = useLocation();
   const { user, logout } = useAuth();
+  const { t } = useLanguage();
   const { data: notifications } = useGetNotifications();
   const unreadCount = notifications?.filter((notification) => !notification.readStatus).length ?? 0;
 
   const navigation = [
-    { name: "Dashboard", href: "/", icon: LayoutDashboard, roles: ["admin", "security", "employee"] },
-    { name: "Check-in", href: "/check-in", icon: UserPlus, roles: ["admin", "security"] },
-    { name: "Visitors", href: "/visitors", icon: Users, roles: ["admin", "security", "employee"] },
-    { name: "Reports", href: "/reports", icon: FileBarChart, roles: ["admin", "security"] },
-    { name: "Blacklist", href: "/blacklist", icon: ShieldAlert, roles: ["admin", "security"] },
-    { name: "Users", href: "/users", icon: Shield, roles: ["admin"] },
-    { name: "Notifications", href: "/notifications", icon: Bell, roles: ["admin", "security", "employee"] },
-    { name: "Settings", href: "/settings", icon: Settings, roles: ["admin"] },
+    { name: "Dashboard", label: t("Dashboard"), href: "/", icon: LayoutDashboard, roles: ["admin", "security", "employee"] },
+    { name: "Check-in", label: t("Check-in"), href: "/check-in", icon: UserPlus, roles: ["admin", "security"] },
+    { name: "Visitors", label: t("Visitors"), href: "/visitors", icon: Users, roles: ["admin", "security", "employee"] },
+    { name: "Reports", label: t("Reports"), href: "/reports", icon: FileBarChart, roles: ["admin", "security"] },
+    { name: "Blacklist", label: t("Blacklist"), href: "/blacklist", icon: ShieldAlert, roles: ["admin", "security"] },
+    { name: "Users", label: t("Users"), href: "/users", icon: Shield, roles: ["admin"] },
+    { name: "Notifications", label: t("Notifications"), href: "/notifications", icon: Bell, roles: ["admin", "security", "employee"] },
+    { name: "Settings", label: t("Settings"), href: "/settings", icon: Settings, roles: ["admin"] },
   ];
 
   const allowedNav = navigation.filter(item => user && item.roles.includes(user.role));
@@ -30,7 +32,7 @@ export function Sidebar() {
           <ShieldCheck className="h-10 w-10 shrink-0" />
           <div>
             <div className="font-heading text-2xl font-bold tracking-tight">VMS</div>
-            <div className="text-[10px] font-medium tracking-wide text-blue-100">Visitor Management</div>
+            <div className="text-[10px] font-medium tracking-wide text-blue-100">{t("Visitor Management")}</div>
           </div>
         </div>
         <div aria-hidden="true" className="absolute -bottom-7 -left-5 h-12 w-[120%] rounded-[50%] bg-sidebar" />
@@ -53,7 +55,7 @@ export function Sidebar() {
               >
                 {isActive && <span className="absolute inset-y-2 left-0 w-1 rounded-full bg-blue-600" />}
                 <item.icon className={cn("h-5 w-5 shrink-0", isActive ? "text-blue-600 dark:text-sky-400" : "text-sidebar-foreground")} />
-                <span className="flex-1">{item.name}</span>
+                <span className="flex-1">{item.label}</span>
                 {item.name === "Notifications" && unreadCount > 0 && (
                   <span className="flex h-5 min-w-5 items-center justify-center rounded-full bg-rose-500 px-1 text-[10px] font-bold text-white">
                     {unreadCount > 99 ? "99+" : unreadCount}
@@ -72,13 +74,15 @@ export function Sidebar() {
           </div>
           <div className="flex-1 overflow-hidden">
             <div className="truncate text-sm font-medium text-foreground">{user?.name}</div>
-            <div className="truncate text-xs text-muted-foreground capitalize">{user?.role}</div>
+            <div className="truncate text-xs text-muted-foreground capitalize">
+              {user?.role ? t(user.role === "admin" ? "Administrator" : user.role === "security" ? "Security Officer" : "Employee / Host") : ""}
+            </div>
           </div>
           <button
             onClick={logout}
             className="rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive"
-            title="Log out"
-            aria-label="Log out"
+            title={t("Log out")}
+            aria-label={t("Log out")}
           >
             <LogOut className="h-4 w-4" />
           </button>

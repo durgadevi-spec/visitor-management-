@@ -1,6 +1,6 @@
 import type { Express, Request } from "express";
 import type { Server } from "http";
-import { eq, and, or, ilike, gte, lte, desc } from "drizzle-orm";
+import { eq, and, or, ilike, gte, lte, desc, inArray } from "drizzle-orm";
 import { db } from "./db";
 import { authMiddleware, hashPassword, signToken, type JwtPayload } from "./auth";
 import {
@@ -217,6 +217,31 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
     res.json(formatUser(found));
   });
 
+  app.get(`${api}/public/visitor-pass/:id`, async (req, res): Promise<void> => {
+    const [visitor] = await db.select({
+      visitorId: visitorsTable.visitorId,
+      name: visitorsTable.name,
+      personToMeet: visitorsTable.personToMeet,
+      photoUrl: visitorsTable.photoUrl,
+      status: visitorsTable.status,
+      scheduledFor: visitorsTable.scheduledFor,
+      createdAt: visitorsTable.createdAt,
+    }).from(visitorsTable).where(eq(visitorsTable.id, req.params.id));
+    if (!visitor) {
+      res.status(404).json({ error: "Visitor pass not found" });
+      return;
+    }
+
+    const settings = await getSystemSettings();
+    res.json({
+      ...visitor,
+      photoUrl: visitor.photoUrl ?? null,
+      createdAt: visitor.createdAt.toISOString(),
+      facilityName: settings.facilityName,
+      companyLogo: settings.companyLogo ?? null,
+    });
+  });
+
   app.get(`${api}/settings`, authMiddleware, async (_req, res): Promise<void> => {
     const settings = await getSystemSettings();
     res.json(settings);
@@ -330,10 +355,29 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
     }
 
     const data = parsed.data;
+    const user = (req as AuthedRequest).user;
+    const isScheduled = !!data.scheduledFor;
+    if (isScheduled && user.role !== "admin") {
+      res.status(403).json({ error: "Only administrators can schedule future visits" });
+      return;
+    }
+
     const settings = await getSystemSettings();
     if (settings.requirePhoto && !data.photoUrl) {
       res.status(400).json({ error: "A visitor photo is required by system settings" });
       return;
+    }
+    if (data.scheduledFor) {
+      const currentDate = new Intl.DateTimeFormat("en-CA", {
+        timeZone: settings.timezone,
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+      }).format(new Date());
+      if (data.scheduledFor < currentDate) {
+        res.status(400).json({ error: "Scheduled visit date cannot be in the past" });
+        return;
+      }
     }
 
     const id = generateId();
@@ -341,7 +385,6 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
     const blacklistEntries = await db.select().from(blacklistTable);
     const blacklistMatch = findBlacklistMatchEntry(blacklistEntries, data.name, data.mobile);
     const isBlacklisted = !!blacklistMatch;
-    const user = (req as AuthedRequest).user;
 
     const visitor = await db.transaction(async (tx) => {
       const [createdVisitor] = await tx
@@ -359,8 +402,9 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
           idNumber: data.idNumber,
           photoUrl: data.photoUrl ?? null,
           qrCode: visitorId,
-          status: "checked_in",
-          checkIn: new Date(),
+          scheduledFor: data.scheduledFor ?? null,
+          status: isScheduled ? "scheduled" : "checked_in",
+          checkIn: isScheduled ? null : new Date(),
           isBlacklisted,
           isFlagged: isBlacklisted,
           remarks: isBlacklisted ? `Security alert: matched blacklist reason "${blacklistMatch.reason}"` : null,
@@ -369,10 +413,12 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
 
       await tx.insert(visitorAuditTable).values({
         visitorId: id,
-        action: "registered",
+        action: isScheduled ? "visit_scheduled" : "registered",
         actorUserId: user.userId,
         actorEmail: user.email,
-        details: "Visitor registered and checked in.",
+        details: isScheduled
+          ? `Future visit scheduled for ${data.scheduledFor}.`
+          : "Visitor registered and checked in.",
       });
       if (data.gadgets?.length) {
         await tx.insert(visitorGadgetsTable).values(data.gadgets.map((gadget) => ({
@@ -388,23 +434,25 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
           actorEmail: user.email,
           details: `${data.gadgets.length} gadget${data.gadgets.length === 1 ? "" : "s"} recorded; approval is pending.`,
         });
-        const reviewers = await tx.select({ id: usersTable.id }).from(usersTable)
-          .where(or(eq(usersTable.role, "admin"), eq(usersTable.role, "security")));
-        if (reviewers.length > 0) {
-          await tx.insert(notificationsTable).values(reviewers.map((reviewer) => ({
-            userId: reviewer.id,
-            message: `${data.gadgets!.length} gadget${data.gadgets!.length === 1 ? "" : "s"} carried by ${data.name} need approval.`,
-            type: "warning",
-            readStatus: false,
-            visitorId: id,
-          })));
+        if (!isScheduled) {
+          const reviewers = await tx.select({ id: usersTable.id }).from(usersTable)
+            .where(or(eq(usersTable.role, "admin"), eq(usersTable.role, "security")));
+          if (reviewers.length > 0) {
+            await tx.insert(notificationsTable).values(reviewers.map((reviewer) => ({
+              userId: reviewer.id,
+              message: `${data.gadgets!.length} gadget${data.gadgets!.length === 1 ? "" : "s"} carried by ${data.name} need approval.`,
+              type: "warning",
+              readStatus: false,
+              visitorId: id,
+            })));
+          }
         }
       }
 
       return createdVisitor;
     });
 
-    if (data.personToMeetId) {
+    if (data.personToMeetId && !isScheduled) {
       await db.insert(notificationsTable).values({
         userId: data.personToMeetId,
         message: `${data.name} has arrived to meet you. Purpose: ${data.purpose}`,
@@ -718,11 +766,34 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
 
   app.put(`${api}/visitors/:id/checkin`, authMiddleware, async (req, res): Promise<void> => {
     const user = (req as AuthedRequest).user;
+    const [existing] = await db.select({
+      status: visitorsTable.status,
+      photoUrl: visitorsTable.photoUrl,
+      personToMeetId: visitorsTable.personToMeetId,
+      name: visitorsTable.name,
+    }).from(visitorsTable).where(eq(visitorsTable.id, req.params.id));
+    if (!existing) {
+      res.status(404).json({ error: "Visitor not found" });
+      return;
+    }
+    if (!["scheduled", "pending", "approved"].includes(existing.status)) {
+      res.status(409).json({ error: "Visitor cannot be checked in from the current status" });
+      return;
+    }
+    const settings = await getSystemSettings();
+    if (settings.requirePhoto && !existing.photoUrl) {
+      res.status(400).json({ error: "A visitor photo is required by system settings before check-in" });
+      return;
+    }
+
     const updated = await db.transaction(async (tx) => {
       const [checkedIn] = await tx
         .update(visitorsTable)
         .set({ status: "checked_in", checkIn: new Date() })
-        .where(eq(visitorsTable.id, req.params.id))
+        .where(and(
+          eq(visitorsTable.id, req.params.id),
+          inArray(visitorsTable.status, ["scheduled", "pending", "approved"]),
+        ))
         .returning();
 
       if (!checkedIn) return null;
@@ -736,8 +807,39 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
       return checkedIn;
     });
     if (!updated) {
-      res.status(404).json({ error: "Visitor not found" });
+      res.status(409).json({ error: "Visitor cannot be checked in from the current status" });
       return;
+    }
+
+    if (existing.personToMeetId) {
+      await db.insert(notificationsTable).values({
+        userId: existing.personToMeetId,
+        message: `${existing.name} has arrived. Please meet your visitor.`,
+        type: "info",
+        readStatus: false,
+        visitorId: req.params.id,
+      });
+    }
+
+    if (existing.status === "scheduled") {
+      const pendingGadgets = await db.select({ id: visitorGadgetsTable.id }).from(visitorGadgetsTable)
+        .where(and(
+          eq(visitorGadgetsTable.visitorId, req.params.id),
+          eq(visitorGadgetsTable.approvalStatus, "pending"),
+        ));
+      if (pendingGadgets.length > 0) {
+        const reviewers = await db.select({ id: usersTable.id }).from(usersTable)
+          .where(or(eq(usersTable.role, "admin"), eq(usersTable.role, "security")));
+        if (reviewers.length > 0) {
+          await db.insert(notificationsTable).values(reviewers.map((reviewer) => ({
+            userId: reviewer.id,
+            message: `${pendingGadgets.length} gadget${pendingGadgets.length === 1 ? "" : "s"} carried by ${existing.name} need approval.`,
+            type: "warning",
+            readStatus: false,
+            visitorId: req.params.id,
+          })));
+        }
+      }
     }
     res.json(formatVisitor(updated));
   });
@@ -747,10 +849,11 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
     const today = new Date();
     today.setHours(0, 0, 0, 0);
 
-    const todayVisitors = await db.select().from(visitorsTable).where(gte(visitorsTable.createdAt, today));
+    const todayVisitors = await db.select().from(visitorsTable).where(gte(visitorsTable.checkIn, today));
 
     const totalToday = todayVisitors.length;
-    const visitorsInside = todayVisitors.filter((v) => v.status === "checked_in").length;
+    const visitorsInside = (await db.select({ id: visitorsTable.id }).from(visitorsTable)
+      .where(eq(visitorsTable.status, "checked_in"))).length;
     const checkedOut = todayVisitors.filter((v) => v.status === "checked_out").length;
     const pendingVisitors = await db.select({ id: visitorsTable.id }).from(visitorsTable)
       .where(eq(visitorsTable.status, "pending"));
@@ -758,11 +861,11 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
 
     const weekStart = new Date();
     weekStart.setDate(weekStart.getDate() - 7);
-    const weekVisitors = await db.select().from(visitorsTable).where(gte(visitorsTable.createdAt, weekStart));
+    const weekVisitors = await db.select().from(visitorsTable).where(gte(visitorsTable.checkIn, weekStart));
 
     const monthStart = new Date();
     monthStart.setDate(1);
-    const monthVisitors = await db.select().from(visitorsTable).where(gte(visitorsTable.createdAt, monthStart));
+    const monthVisitors = await db.select().from(visitorsTable).where(gte(visitorsTable.checkIn, monthStart));
 
     const hourCounts: Record<number, number> = {};
     for (const v of todayVisitors) {
@@ -879,8 +982,9 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
     }
 
     const visitors = await db.select().from(visitorsTable).where(gte(visitorsTable.createdAt, start));
+    const visitsInPeriod = await db.select().from(visitorsTable).where(gte(visitorsTable.checkIn, start));
 
-    const totalVisitors = visitors.length;
+    const totalVisitors = visitsInPeriod.length;
     const avgDailyVisitors = days > 1 ? totalVisitors / days : totalVisitors;
 
     const dayCount: Record<string, number> = {};
@@ -890,8 +994,9 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
       const key = date.toISOString().split("T")[0];
       dayCount[key] = 0;
     }
-    for (const v of visitors) {
-      const key = v.createdAt.toISOString().split("T")[0];
+    for (const v of visitsInPeriod) {
+      if (!v.checkIn) continue;
+      const key = v.checkIn.toISOString().split("T")[0];
       if (key in dayCount) dayCount[key] = (dayCount[key] || 0) + 1;
     }
 
@@ -904,8 +1009,9 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
 
     const hourCount: Record<number, number> = {};
     for (let h = 6; h <= 20; h++) hourCount[h] = 0;
-    for (const v of visitors) {
-      const h = v.createdAt.getHours();
+    for (const v of visitsInPeriod) {
+      if (!v.checkIn) continue;
+      const h = v.checkIn.getHours();
       hourCount[h] = (hourCount[h] || 0) + 1;
     }
     const hourlyDistribution = Object.entries(hourCount)
@@ -913,7 +1019,7 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
       .map(([hour, count]) => ({ hour: formatHour(parseInt(hour)), count }));
 
     const purposeCount: Record<string, number> = {};
-    for (const v of visitors) {
+    for (const v of visitsInPeriod) {
       purposeCount[v.purpose] = (purposeCount[v.purpose] || 0) + 1;
     }
     const purposeBreakdown = Object.entries(purposeCount)

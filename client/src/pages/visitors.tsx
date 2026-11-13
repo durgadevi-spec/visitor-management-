@@ -7,13 +7,14 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Badge } from "@/components/ui/badge";
 import { Link } from "wouter";
 import { Search, Filter, ShieldAlert } from "lucide-react";
-import { format } from "date-fns";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useDebounce } from "@/hooks/use-debounce";
 import { motion, useReducedMotion } from "framer-motion";
+import { useLanguage } from "@/contexts/LanguageContext";
 
 export default function Visitors() {
   const reduceMotion = useReducedMotion();
+  const { t, formatDate } = useLanguage();
   const [search, setSearch] = useState("");
   const debouncedSearch = useDebounce(search, 500);
   const [status, setStatus] = useState<string>("all");
@@ -34,6 +35,7 @@ export default function Visitors() {
       case "pending": return "bg-yellow-500/20 text-yellow-400 border-yellow-500/30";
       case "rejected": return "bg-red-500/20 text-red-400 border-red-500/30";
       case "approved": return "bg-purple-500/20 text-purple-400 border-purple-500/30";
+      case "scheduled": return "bg-amber-500/20 text-amber-500 border-amber-500/30";
       default: return "bg-gray-500/20 text-gray-400 border-gray-500/30";
     }
   };
@@ -47,12 +49,12 @@ export default function Visitors() {
         transition={{ duration: reduceMotion ? 0 : 0.3 }}
       >
         <div className="relative z-10">
-          <h1 className="text-2xl font-bold tracking-tight text-foreground">Visitor Directory</h1>
-          <p className="text-sm text-muted-foreground">Comprehensive log of all facility access.</p>
+          <h1 className="text-2xl font-bold tracking-tight text-foreground">{t("Visitor Directory")}</h1>
+          <p className="text-sm text-muted-foreground">{t("Comprehensive log of all facility access.")}</p>
         </div>
         <img
           src="/visitors-illustration.png"
-          alt="Visitors checking in at a reception desk"
+          alt={t("Visitors checking in at a reception desk")}
           className="h-24 w-full object-contain sm:absolute sm:inset-y-0 sm:right-0 sm:h-full sm:w-[48%]"
         />
       </motion.div>
@@ -62,7 +64,7 @@ export default function Visitors() {
           <div className="relative flex-1">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
             <Input 
-              placeholder="Search by name, ID, host, or purpose..." 
+              placeholder={t("Search by name, ID, host, or purpose...")}
               className="pl-9 bg-background border-border"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
@@ -72,15 +74,16 @@ export default function Visitors() {
             <Select value={status} onValueChange={setStatus}>
               <SelectTrigger className="bg-background border-border">
                 <Filter className="h-4 w-4 mr-2" />
-                <SelectValue placeholder="Filter Status" />
+                <SelectValue placeholder={t("Filter Status")} />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="all">All Statuses</SelectItem>
-                <SelectItem value="pending">Pending</SelectItem>
-                <SelectItem value="approved">Approved</SelectItem>
-                <SelectItem value="checked_in">Checked In</SelectItem>
-                <SelectItem value="checked_out">Checked Out</SelectItem>
-                <SelectItem value="rejected">Rejected</SelectItem>
+                <SelectItem value="all">{t("All Statuses")}</SelectItem>
+                <SelectItem value="pending">{t("Pending")}</SelectItem>
+                <SelectItem value="approved">{t("Approved")}</SelectItem>
+                <SelectItem value="checked_in">{t("Checked In")}</SelectItem>
+                <SelectItem value="checked_out">{t("Checked Out")}</SelectItem>
+                <SelectItem value="rejected">{t("Rejected")}</SelectItem>
+                <SelectItem value="scheduled">{t("Scheduled")}</SelectItem>
               </SelectContent>
             </Select>
           </div>
@@ -89,11 +92,11 @@ export default function Visitors() {
           <Table>
             <TableHeader className="bg-muted/50">
               <TableRow className="border-border hover:bg-transparent">
-                <TableHead>Visitor</TableHead>
-                <TableHead>Host</TableHead>
-                <TableHead>Purpose</TableHead>
-                <TableHead>Time</TableHead>
-                <TableHead>Status</TableHead>
+                <TableHead>{t("Visitor")}</TableHead>
+                <TableHead>{t("Host")}</TableHead>
+                <TableHead>{t("Purpose")}</TableHead>
+                <TableHead>{t("Time")}</TableHead>
+                <TableHead>{t("Status")}</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -110,14 +113,14 @@ export default function Visitors() {
               ) : visitors?.length === 0 ? (
                 <TableRow className="border-border hover:bg-transparent">
                   <TableCell colSpan={5} className="text-center py-8 text-muted-foreground">
-                    No visitors found matching the criteria.
+                    {t("No visitors found matching the criteria.")}
                   </TableCell>
                 </TableRow>
               ) : (
                 visitors?.map((visitor) => (
                   <TableRow key={visitor.id} className="border-border hover:bg-muted/20 transition-colors cursor-pointer group">
                     <TableCell>
-                      <Link href={`/visitor/${visitor.id}`} className="flex items-center gap-3">
+                      <Link href={`/visitor-record/${visitor.id}`} className="flex items-center gap-3">
                         <div className="h-8 w-8 rounded-full bg-primary/20 flex items-center justify-center text-primary font-bold border border-primary/30">
                           {visitor.name.charAt(0)}
                         </div>
@@ -138,16 +141,18 @@ export default function Visitors() {
                     </TableCell>
                     <TableCell>
                       <div className="text-sm">
-                        {visitor.status === "checked_in" && visitor.checkIn
-                          ? `Check-in: ${format(new Date(visitor.checkIn), "MMM d, HH:mm")}`
+                        {visitor.status === "scheduled" && visitor.scheduledFor
+                          ? `${t("Expected Visit Date")}: ${formatDate(new Date(`${visitor.scheduledFor}T00:00:00`), "MMM d, yyyy")}`
+                          : visitor.status === "checked_in" && visitor.checkIn
+                          ? `${t("Check-in:")} ${formatDate(new Date(visitor.checkIn), "MMM d, HH:mm")}`
                           : visitor.status === "checked_out" && visitor.checkOut
-                            ? `Check-out: ${format(new Date(visitor.checkOut), "MMM d, HH:mm")}`
-                            : format(new Date(visitor.createdAt), "MMM d, HH:mm")}
+                            ? `${t("Check-out:")} ${formatDate(new Date(visitor.checkOut), "MMM d, HH:mm")}`
+                            : formatDate(new Date(visitor.createdAt), "MMM d, HH:mm")}
                       </div>
                     </TableCell>
                     <TableCell>
                       <Badge variant="outline" className={getStatusColor(visitor.status)}>
-                        {visitor.status.replace("_", " ")}
+                        {t(visitor.status.replace("_", " ").replace(/\b\w/g, (letter) => letter.toUpperCase()))}
                       </Badge>
                     </TableCell>
                   </TableRow>

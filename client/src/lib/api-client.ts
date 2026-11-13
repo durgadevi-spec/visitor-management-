@@ -78,7 +78,7 @@ export interface User {
   createdAt: string;
 }
 
-export type VisitorStatus = "pending" | "approved" | "checked_in" | "checked_out" | "rejected";
+export type VisitorStatus = "pending" | "approved" | "checked_in" | "checked_out" | "rejected" | "scheduled";
 export type IdProofType = "aadhar" | "pan" | "passport" | "driving_license" | "voter_id";
 
 export interface Visitor {
@@ -95,6 +95,7 @@ export interface Visitor {
   photoUrl: string | null;
   qrCode: string | null;
   status: VisitorStatus;
+  scheduledFor: string | null;
   checkIn: string | null;
   checkOut: string | null;
   duration: string | null;
@@ -103,6 +104,18 @@ export interface Visitor {
   remarks: string | null;
   approvedBy: number | null;
   createdAt: string;
+}
+
+export interface PublicVisitorPass {
+  visitorId: string;
+  name: string;
+  personToMeet: string;
+  photoUrl: string | null;
+  status: VisitorStatus;
+  scheduledFor: string | null;
+  createdAt: string;
+  facilityName: string;
+  companyLogo: string | null;
 }
 
 export interface VisitorAuditEntry {
@@ -300,6 +313,7 @@ export interface CreateVisitorInput {
   idProofType: IdProofType;
   idNumber: string;
   photoUrl?: string | null;
+  scheduledFor?: string;
   gadgets?: { name: string; makeModel?: string | null; serialNumber?: string | null }[];
 }
 
@@ -333,6 +347,14 @@ export function useGetVisitor(id: string, options?: { query?: Partial<UseQueryOp
   return useQuery<Visitor, ApiError>({
     queryKey: getGetVisitorQueryKey(id),
     queryFn: () => request<Visitor>(`/api/visitors/${id}`),
+    ...options?.query,
+  });
+}
+
+export function useGetPublicVisitorPass(id: string, options?: { query?: Partial<UseQueryOptions<PublicVisitorPass, ApiError>> }) {
+  return useQuery<PublicVisitorPass, ApiError>({
+    queryKey: ["/api/public/visitor-pass", id],
+    queryFn: () => request<PublicVisitorPass>(`/api/public/visitor-pass/${encodeURIComponent(id)}`),
     ...options?.query,
   });
 }

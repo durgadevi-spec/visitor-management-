@@ -27,7 +27,6 @@ import { Input } from "@/components/ui/input";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { format } from "date-fns";
 import { 
   UserCircle, Printer, LogIn, LogOut, 
   Clock, ShieldAlert, FileText, Phone, Mail, Building, ArrowLeft, Pencil, History
@@ -36,6 +35,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
 import { useEffect, useRef, useState } from "react";
 import { useAuth } from "@/contexts/AuthContext";
+import { useLanguage } from "@/contexts/LanguageContext";
 
 const editVisitorSchema = z.object({
   name: z.string().min(2, "Name is required"),
@@ -52,6 +52,7 @@ export default function VisitorDetail() {
   const [, setLocation] = useLocation();
   const queryClient = useQueryClient();
   const { toast } = useToast();
+  const { t, formatDate, language } = useLanguage();
   const { user } = useAuth();
   const [editOpen, setEditOpen] = useState(false);
   const [qrCodeImage, setQrCodeImage] = useState<string | null>(null);
@@ -107,8 +108,8 @@ export default function VisitorDetail() {
       .catch((error: unknown) => {
         if (!active) return;
         toast({
-          title: "QR Code Generation Failed",
-          description: error instanceof Error ? error.message : "Unable to generate the visitor pass QR code.",
+          title: t("QR Code Generation Failed"),
+          description: error instanceof Error ? t(error.message) : t("Unable to generate the visitor pass QR code."),
           variant: "destructive",
         });
       });
@@ -116,12 +117,12 @@ export default function VisitorDetail() {
     return () => {
       active = false;
     };
-  }, [visitor?.id, toast]);
+  }, [visitor?.id, toast, t]);
 
   const checkinMutation = useCheckinVisitor({
     mutation: {
       onSuccess: () => {
-        toast({ title: "Checked In", description: "Visitor has been checked in." });
+        toast({ title: t("Checked In"), description: t("Visitor has been checked in.") });
         queryClient.invalidateQueries({ queryKey: getGetVisitorQueryKey(id!) });
         queryClient.invalidateQueries({ queryKey: getGetVisitorAuditQueryKey(id!) });
         queryClient.invalidateQueries({ queryKey: getGetVisitorsQueryKey() });
@@ -132,39 +133,39 @@ export default function VisitorDetail() {
   const checkoutMutation = useCheckoutVisitor({
     mutation: {
       onSuccess: () => {
-        toast({ title: "Checked Out", description: "Visitor has been checked out." });
+        toast({ title: t("Checked Out"), description: t("Visitor has been checked out.") });
         queryClient.invalidateQueries({ queryKey: getGetVisitorQueryKey(id!) });
         queryClient.invalidateQueries({ queryKey: getGetVisitorAuditQueryKey(id!) });
         queryClient.invalidateQueries({ queryKey: getGetVisitorsQueryKey() });
       },
-      onError: (error) => toast({ title: "Check Out Failed", description: error.error, variant: "destructive" }),
+      onError: (error) => toast({ title: t("Check Out Failed"), description: t(error.error), variant: "destructive" }),
     }
   });
 
   const reviewGadgetMutation = useReviewVisitorGadget({
     mutation: {
       onSuccess: refreshGadgets,
-      onError: (error) => toast({ title: "Gadget Review Failed", description: error.error, variant: "destructive" }),
+      onError: (error) => toast({ title: t("Gadget Review Failed"), description: t(error.error), variant: "destructive" }),
     },
   });
   const returnGadgetMutation = useReturnVisitorGadget({
     mutation: {
       onSuccess: refreshGadgets,
-      onError: (error) => toast({ title: "Return Verification Failed", description: error.error, variant: "destructive" }),
+      onError: (error) => toast({ title: t("Return Verification Failed"), description: t(error.error), variant: "destructive" }),
     },
   });
 
   const updateMutation = useUpdateVisitor({
     mutation: {
       onSuccess: () => {
-        toast({ title: "Visitor Updated", description: "Visitor details have been saved." });
+        toast({ title: t("Visitor Updated"), description: t("Visitor details have been saved.") });
         setEditOpen(false);
         queryClient.invalidateQueries({ queryKey: getGetVisitorQueryKey(id!) });
         queryClient.invalidateQueries({ queryKey: getGetVisitorAuditQueryKey(id!) });
         queryClient.invalidateQueries({ queryKey: getGetVisitorsQueryKey() });
       },
       onError: (error) => {
-        toast({ title: "Update Failed", description: error.error, variant: "destructive" });
+        toast({ title: t("Update Failed"), description: t(error.error), variant: "destructive" });
       },
     },
   });
@@ -197,9 +198,10 @@ export default function VisitorDetail() {
   const downloadVisitorPassPdf = async () => {
     if (!visitor) return;
     if (!qrCodeImage) {
-      toast({ title: "QR Code Not Ready", description: "Please wait for the visitor pass QR code to load.", variant: "destructive" });
+      toast({ title: t("QR Code Not Ready"), description: t("Please wait for the visitor pass QR code to load."), variant: "destructive" });
       return;
     }
+    const pdfText = language === "ta" ? (text: string) => text : t;
 
     const doc = new jsPDF({ orientation: "portrait", unit: "mm", format: "a6" });
     const pageWidth = 105;
@@ -216,11 +218,11 @@ export default function VisitorDetail() {
 
     doc.setFont("helvetica", "bold");
     doc.setFontSize(10);
-    doc.text(systemSettings?.facilityName ?? "Visitor Management", 52.5, 14, { align: "center" });
+    doc.text(systemSettings?.facilityName ?? pdfText("Visitor Management"), 52.5, 14, { align: "center" });
 
     doc.setFontSize(8);
     doc.setFont("helvetica", "normal");
-    doc.text("Visitor Pass", 52.5, 20, { align: "center" });
+    doc.text(pdfText("Visitor Pass"), 52.5, 20, { align: "center" });
     doc.setFontSize(6);
     doc.text(systemSettings?.contactEmail ?? "", 52.5, 25, { align: "center" });
 
@@ -248,12 +250,12 @@ export default function VisitorDetail() {
       } catch {
         doc.roundedRect(photoX, photoY, photoW, photoH, 2, 2, "S");
         doc.setFontSize(8);
-        doc.text("No Photo", photoX + photoW / 2, photoY + photoH / 2, { align: "center" });
+        doc.text(pdfText("No Photo"), photoX + photoW / 2, photoY + photoH / 2, { align: "center" });
       }
     } else {
       doc.roundedRect(photoX, photoY, photoW, photoH, 2, 2, "S");
       doc.setFontSize(8);
-      doc.text("No Photo", photoX + photoW / 2, photoY + photoH / 2, { align: "center" });
+      doc.text(pdfText("No Photo"), photoX + photoW / 2, photoY + photoH / 2, { align: "center" });
     }
 
     const detailsY = 80;
@@ -263,7 +265,9 @@ export default function VisitorDetail() {
       `Visitor ID: ${visitor.visitorId}`,
       `Host: ${visitor.personToMeet}`,
       `Purpose: ${visitor.purpose}`,
-      `Date: ${format(new Date(visitor.createdAt), "MMM d, yyyy")}`,
+      `${visitor.scheduledFor ? "Expected Visit Date" : "Date"}: ${visitor.scheduledFor
+        ? new Date(`${visitor.scheduledFor}T00:00:00`).toLocaleDateString("en-US")
+        : new Date(visitor.createdAt).toLocaleDateString("en-US")}`,
       `Mobile: ${visitor.mobile}`,
     ];
 
@@ -274,7 +278,7 @@ export default function VisitorDetail() {
 
     doc.addImage(qrCodeImage, "PNG", 40, 110, 25, 25);
     doc.setFontSize(6.5);
-    doc.text("Scan this code to open the visitor profile.", 52.5, 138, { align: "center" });
+    doc.text("Scan this code to view the visitor pass.", 52.5, 138, { align: "center" });
 
     doc.save(`visitor-pass-${visitor.visitorId}.pdf`);
   };
@@ -286,6 +290,7 @@ export default function VisitorDetail() {
       case "pending": return "bg-yellow-500/20 text-yellow-400 border-yellow-500/30";
       case "rejected": return "bg-red-500/20 text-red-400 border-red-500/30";
       case "approved": return "bg-purple-500/20 text-purple-400 border-purple-500/30";
+      case "scheduled": return "bg-amber-500/20 text-amber-500 border-amber-500/30";
       default: return "bg-gray-500/20 text-gray-400 border-gray-500/30";
     }
   };
@@ -294,25 +299,25 @@ export default function VisitorDetail() {
     return <div className="space-y-6"><Skeleton className="h-40 w-full" /><Skeleton className="h-64 w-full" /></div>;
   }
 
-  if (!visitor) return <div>Visitor not found</div>;
+  if (!visitor) return <div>{t("Visitor not found")}</div>;
 
   return (
     <div className="space-y-6">
       <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 print:hidden">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight text-foreground">Visitor Profile</h1>
-          <p className="text-sm text-muted-foreground">ID: <span className="font-mono">{visitor.visitorId}</span></p>
+          <h1 className="text-2xl font-bold tracking-tight text-foreground">{t("Visitor Profile")}</h1>
+          <p className="text-sm text-muted-foreground">{t("ID:")} <span className="font-mono">{visitor.visitorId}</span></p>
         </div>
         <div className="flex gap-2 flex-wrap">
           <Button variant="outline" onClick={() => setLocation("/")}>
-            <ArrowLeft className="mr-2 h-4 w-4" /> Back to Dashboard
+            <ArrowLeft className="mr-2 h-4 w-4" /> {t("Back to Dashboard")}
           </Button>
           <Button variant="outline" onClick={() => setEditOpen(true)}>
-            <Pencil className="mr-2 h-4 w-4" /> Edit Visitor
+            <Pencil className="mr-2 h-4 w-4" /> {t("Edit Visitor")}
           </Button>
-          {(visitor.status === "pending" || visitor.status === "approved") && (
+          {(visitor.status === "scheduled" || visitor.status === "pending" || visitor.status === "approved") && (
             <Button variant="default" className="bg-blue-500 hover:bg-blue-600 text-white" onClick={handleCheckin} disabled={checkinMutation.isPending}>
-              <LogIn className="mr-2 h-4 w-4" /> Check In
+              <LogIn className="mr-2 h-4 w-4" /> {t("Check In")}
             </Button>
           )}
           {visitor.status === "checked_in" && (
@@ -322,77 +327,77 @@ export default function VisitorDetail() {
               onClick={handleCheckout}
               disabled={checkoutMutation.isPending || gadgetsLoading || gadgetsError || gadgetsPendingCheckout}
             >
-              <LogOut className="mr-2 h-4 w-4" /> {gadgetsPendingCheckout ? "Verify Gadget Returns" : "Check Out"}
+              <LogOut className="mr-2 h-4 w-4" /> {gadgetsPendingCheckout ? t("Verify Gadget Returns") : t("Check Out")}
             </Button>
           )}
           <Button variant="secondary" onClick={printBadge}>
-            <Printer className="mr-2 h-4 w-4" /> Print Badge
+            <Printer className="mr-2 h-4 w-4" /> {t("Print Badge")}
           </Button>
           <Button variant="outline" onClick={downloadVisitorPassPdf}>
-            <Printer className="mr-2 h-4 w-4" /> Download PDF
+            <Printer className="mr-2 h-4 w-4" /> {t("Download PDF")}
           </Button>
         </div>
       </div>
       {visitor.status === "checked_in" && gadgetsError && (
-        <p role="alert" className="text-sm text-destructive print:hidden">Gadget status could not be verified, so checkout is temporarily unavailable. Refresh and try again.</p>
+        <p role="alert" className="text-sm text-destructive print:hidden">{t("Gadget status could not be verified, so checkout is temporarily unavailable. Refresh and try again.")}</p>
       )}
 
       <Dialog open={editOpen} onOpenChange={setEditOpen}>
         <DialogContent className="max-h-[90vh] overflow-y-auto border-border bg-card sm:max-w-lg">
           <DialogHeader>
-            <DialogTitle>Edit Visitor Details</DialogTitle>
-            <CardDescription>Update the visitor's registration information.</CardDescription>
+            <DialogTitle>{t("Edit Visitor Details")}</DialogTitle>
+            <CardDescription>{t("Update the visitor's registration information.")}</CardDescription>
           </DialogHeader>
           <Form {...editForm}>
             <form onSubmit={editForm.handleSubmit(handleUpdate)} className="space-y-4">
               <FormField control={editForm.control} name="name" render={({ field }) => (
                 <FormItem>
-                  <FormLabel>Full Name</FormLabel>
+                  <FormLabel>{t("Full Name")}</FormLabel>
                   <FormControl><Input {...field} /></FormControl>
                   <FormMessage />
                 </FormItem>
               )} />
               <FormField control={editForm.control} name="mobile" render={({ field }) => (
                 <FormItem>
-                  <FormLabel>Mobile Number</FormLabel>
+                  <FormLabel>{t("Mobile Number")}</FormLabel>
                   <FormControl><Input {...field} type="tel" inputMode="numeric" maxLength={10} /></FormControl>
                   <FormMessage />
                 </FormItem>
               )} />
               <FormField control={editForm.control} name="email" render={({ field }) => (
                 <FormItem>
-                  <FormLabel>Email Address (Optional)</FormLabel>
+                  <FormLabel>{t("Email Address (Optional)")}</FormLabel>
                   <FormControl><Input {...field} /></FormControl>
                   <FormMessage />
                 </FormItem>
               )} />
               <FormField control={editForm.control} name="personToMeet" render={({ field }) => (
                 <FormItem>
-                  <FormLabel>Host / Person to Meet</FormLabel>
+                  <FormLabel>{t("Host / Person to Meet")}</FormLabel>
                   <FormControl><Input {...field} /></FormControl>
                   <FormMessage />
                 </FormItem>
               )} />
               <FormField control={editForm.control} name="purpose" render={({ field }) => (
                 <FormItem>
-                  <FormLabel>Purpose of Visit</FormLabel>
+                  <FormLabel>{t("Purpose of Visit")}</FormLabel>
                   <FormControl><Input {...field} /></FormControl>
                   <FormMessage />
                 </FormItem>
               )} />
               <FormField control={editForm.control} name="idProofType" render={({ field }) => (
                 <FormItem>
-                  <FormLabel>ID Type</FormLabel>
+                  <FormLabel>{t("ID Type")}</FormLabel>
                   <Select onValueChange={field.onChange} value={field.value}>
                     <FormControl>
-                      <SelectTrigger><SelectValue placeholder="Select ID type" /></SelectTrigger>
+                      <SelectTrigger><SelectValue placeholder={t("Select ID type")} /></SelectTrigger>
                     </FormControl>
                     <SelectContent>
-                      <SelectItem value="aadhar">Aadhar</SelectItem>
-                      <SelectItem value="pan">PAN</SelectItem>
-                      <SelectItem value="passport">Passport</SelectItem>
-                      <SelectItem value="driving_license">Driving License</SelectItem>
-                      <SelectItem value="voter_id">Voter ID</SelectItem>
+                      <SelectItem value="aadhar">{t("Aadhar")}</SelectItem>
+                      <SelectItem value="pan">{t("PAN")}</SelectItem>
+                      <SelectItem value="passport">{t("Passport")}</SelectItem>
+                      <SelectItem value="driving_license">{t("Driving License")}</SelectItem>
+                      <SelectItem value="voter_id">{t("Voter ID")}</SelectItem>
                     </SelectContent>
                   </Select>
                   <FormMessage />
@@ -400,15 +405,15 @@ export default function VisitorDetail() {
               )} />
               <FormField control={editForm.control} name="idNumber" render={({ field }) => (
                 <FormItem>
-                  <FormLabel>ID Number</FormLabel>
+                  <FormLabel>{t("ID Number")}</FormLabel>
                   <FormControl><Input {...field} className="font-mono uppercase" /></FormControl>
                   <FormMessage />
                 </FormItem>
               )} />
               <div className="flex justify-end gap-2 pt-2">
-                <Button type="button" variant="outline" onClick={() => setEditOpen(false)}>Cancel</Button>
+                <Button type="button" variant="outline" onClick={() => setEditOpen(false)}>{t("Cancel")}</Button>
                 <Button type="submit" disabled={updateMutation.isPending}>
-                  {updateMutation.isPending ? "Saving..." : "Save Changes"}
+                  {updateMutation.isPending ? t("Saving...") : t("Save Changes")}
                 </Button>
               </div>
             </form>
@@ -418,8 +423,8 @@ export default function VisitorDetail() {
 
       {visitor.isBlacklisted && (
         <div className="rounded-lg border border-destructive/40 bg-destructive/10 p-4 text-sm text-destructive">
-          <div className="font-semibold">Security warning</div>
-          <div>This visitor is currently flagged as blacklisted and should be reviewed before approval or check-in.</div>
+          <div className="font-semibold">{t("Security warning")}</div>
+          <div>{t("This visitor is currently flagged as blacklisted and should be reviewed before approval or check-in.")}</div>
         </div>
       )}
 
@@ -431,7 +436,7 @@ export default function VisitorDetail() {
               {systemSettings?.companyLogo && (
                 <img src={systemSettings.companyLogo} alt={`${systemSettings.facilityName} logo`} className="mx-auto mb-2 h-12 max-w-36 object-contain" />
               )}
-              <h2 className="font-bold tracking-widest text-primary print:text-black">{systemSettings?.facilityName ?? "VISITOR PASS"}</h2>
+              <h2 className="font-bold tracking-widest text-primary print:text-black">{systemSettings?.facilityName ?? t("VISITOR PASS")}</h2>
               {systemSettings?.contactEmail && (
                 <p className="mt-1 text-[10px] text-muted-foreground print:text-gray-600">{systemSettings.contactEmail}</p>
               )}
@@ -450,24 +455,26 @@ export default function VisitorDetail() {
               <div className="space-y-1">
                 <h3 className="text-xl font-bold uppercase tracking-wide">{visitor.name}</h3>
                 <p className="text-sm text-muted-foreground print:text-gray-600 font-mono">{visitor.visitorId}</p>
-                {visitor.isBlacklisted && <Badge variant="destructive" className="mt-2">BLACKLISTED</Badge>}
+                {visitor.isBlacklisted && <Badge variant="destructive" className="mt-2">{t("BLACKLISTED")}</Badge>}
               </div>
 
               <div className="w-full space-y-2 text-sm text-left border-t border-border print:border-gray-200 pt-4">
                 <div className="flex justify-between">
-                  <span className="text-muted-foreground print:text-gray-500">Host:</span>
+                  <span className="text-muted-foreground print:text-gray-500">{t("Host:")}</span>
                   <span className="font-medium truncate max-w-[120px]">{visitor.personToMeet}</span>
                 </div>
                 <div className="flex justify-between">
-                  <span className="text-muted-foreground print:text-gray-500">Date:</span>
-                  <span className="font-medium">{format(new Date(visitor.createdAt), "MMM d, yyyy")}</span>
+                  <span className="text-muted-foreground print:text-gray-500">{visitor.scheduledFor ? t("Expected Visit Date") : t("Date:")}</span>
+                  <span className="font-medium">{visitor.scheduledFor
+                    ? formatDate(new Date(`${visitor.scheduledFor}T00:00:00`), "MMM d, yyyy")
+                    : formatDate(new Date(visitor.createdAt), "MMM d, yyyy")}</span>
                 </div>
               </div>
 
               <div className="w-24 h-24 bg-white border border-gray-200 p-2 flex items-center justify-center">
                 {qrCodeImage
                   ? <img src={qrCodeImage} alt="Scannable visitor pass QR code" className="h-full w-full" />
-                  : <span className="text-xs text-muted-foreground" role="status">Generating QR...</span>}
+                  : <span className="text-xs text-muted-foreground" role="status">{t("Generating QR...")}</span>}
               </div>
             </CardContent>
           </Card>
@@ -477,39 +484,45 @@ export default function VisitorDetail() {
         <div className="lg:col-span-2 space-y-6 print:hidden">
           <Card className="border-border bg-card">
             <CardHeader className="flex flex-row items-center justify-between">
-              <CardTitle className="text-lg">Detailed Information</CardTitle>
+              <CardTitle className="text-lg">{t("Detailed Information")}</CardTitle>
               <Badge variant="outline" className={getStatusColor(visitor.status)}>
-                {visitor.status.replace("_", " ")}
+                {t(visitor.status.replace("_", " ").replace(/\b\w/g, (letter) => letter.toUpperCase()))}
               </Badge>
             </CardHeader>
             <CardContent className="grid grid-cols-1 md:grid-cols-2 gap-6">
               <div className="space-y-4">
+                {visitor.scheduledFor && (
+                  <div>
+                    <div className="text-xs text-muted-foreground uppercase tracking-wider mb-1 flex items-center gap-1"><Clock className="h-3 w-3"/> {t("Expected Visit Date")}</div>
+                    <div className="font-medium">{formatDate(new Date(`${visitor.scheduledFor}T00:00:00`), "MMM d, yyyy")}</div>
+                  </div>
+                )}
                 <div>
-                  <div className="text-xs text-muted-foreground uppercase tracking-wider mb-1 flex items-center gap-1"><Phone className="h-3 w-3"/> Mobile</div>
+                  <div className="text-xs text-muted-foreground uppercase tracking-wider mb-1 flex items-center gap-1"><Phone className="h-3 w-3"/> {t("Mobile")}</div>
                   <div className="font-medium">{visitor.mobile}</div>
                 </div>
                 <div>
-                  <div className="text-xs text-muted-foreground uppercase tracking-wider mb-1 flex items-center gap-1"><Mail className="h-3 w-3"/> Email</div>
+                  <div className="text-xs text-muted-foreground uppercase tracking-wider mb-1 flex items-center gap-1"><Mail className="h-3 w-3"/> {t("Email")}</div>
                   <div className="font-medium">{visitor.email || "N/A"}</div>
                 </div>
                 <div>
-                  <div className="text-xs text-muted-foreground uppercase tracking-wider mb-1 flex items-center gap-1"><Building className="h-3 w-3"/> Purpose</div>
+                  <div className="text-xs text-muted-foreground uppercase tracking-wider mb-1 flex items-center gap-1"><Building className="h-3 w-3"/> {t("Purpose")}</div>
                   <div className="font-medium">{visitor.purpose}</div>
                 </div>
               </div>
               <div className="space-y-4">
                 <div>
-                  <div className="text-xs text-muted-foreground uppercase tracking-wider mb-1 flex items-center gap-1"><FileText className="h-3 w-3"/> ID Proof ({visitor.idProofType})</div>
+                  <div className="text-xs text-muted-foreground uppercase tracking-wider mb-1 flex items-center gap-1"><FileText className="h-3 w-3"/> {t("ID Proof")} ({t(visitor.idProofType.replace("_", " "))})</div>
                   <div className="font-mono font-medium">{visitor.idNumber}</div>
                 </div>
                 <div>
-                  <div className="text-xs text-muted-foreground uppercase tracking-wider mb-1 flex items-center gap-1"><Clock className="h-3 w-3"/> Duration</div>
-                  <div className="font-medium">{visitor.duration || "In Progress"}</div>
+                  <div className="text-xs text-muted-foreground uppercase tracking-wider mb-1 flex items-center gap-1"><Clock className="h-3 w-3"/> {t("Duration")}</div>
+                  <div className="font-medium">{visitor.duration || (visitor.checkIn ? t("In Progress") : t("Not checked in"))}</div>
                 </div>
                 {visitor.isBlacklisted && (
                   <div className="p-3 bg-destructive/10 border border-destructive/20 rounded-md">
-                    <div className="text-xs text-destructive uppercase tracking-wider mb-1 flex items-center gap-1"><ShieldAlert className="h-3 w-3"/> Security Alert</div>
-                    <div className="text-sm font-medium text-destructive">This individual is on the security blacklist.</div>
+                    <div className="text-xs text-destructive uppercase tracking-wider mb-1 flex items-center gap-1"><ShieldAlert className="h-3 w-3"/> {t("Security Alert")}</div>
+                    <div className="text-sm font-medium text-destructive">{t("This individual is on the security blacklist.")}</div>
                   </div>
                 )}
               </div>
@@ -518,7 +531,7 @@ export default function VisitorDetail() {
 
           <Card className="border-border bg-card">
             <CardHeader>
-              <CardTitle className="text-lg">Access Timeline</CardTitle>
+              <CardTitle className="text-lg">{t("Access Timeline")}</CardTitle>
             </CardHeader>
             <CardContent>
               <div className="space-y-6 relative before:absolute before:inset-0 before:ml-5 before:-translate-x-px md:before:mx-auto md:before:translate-x-0 before:h-full before:w-0.5 before:bg-gradient-to-b before:from-transparent before:via-border before:to-transparent">
@@ -529,10 +542,10 @@ export default function VisitorDetail() {
                   </div>
                   <div className="w-[calc(100%-4rem)] md:w-[calc(50%-2.5rem)] p-4 rounded border border-border bg-card shadow">
                     <div className="flex items-center justify-between space-x-2 mb-1">
-                      <div className="font-bold text-foreground">Registered</div>
-                      <time className="font-mono text-xs text-muted-foreground">{format(new Date(visitor.createdAt), "HH:mm")}</time>
+                      <div className="font-bold text-foreground">{t("Registered")}</div>
+                      <time className="font-mono text-xs text-muted-foreground">{formatDate(new Date(visitor.createdAt), "HH:mm")}</time>
                     </div>
-                    <div className="text-sm text-muted-foreground">Registered into system</div>
+                    <div className="text-sm text-muted-foreground">{t("Registered into system")}</div>
                   </div>
                 </div>
 
@@ -544,10 +557,10 @@ export default function VisitorDetail() {
                     </div>
                     <div className="w-[calc(100%-4rem)] md:w-[calc(50%-2.5rem)] p-4 rounded border border-border bg-card shadow">
                       <div className="flex items-center justify-between space-x-2 mb-1">
-                        <div className="font-bold text-foreground">Checked In</div>
-                        <time className="font-mono text-xs text-muted-foreground">{format(new Date(visitor.checkIn), "HH:mm")}</time>
+                        <div className="font-bold text-foreground">{t("Checked In")}</div>
+                        <time className="font-mono text-xs text-muted-foreground">{formatDate(new Date(visitor.checkIn), "HH:mm")}</time>
                       </div>
-                      <div className="text-sm text-muted-foreground">Granted access to facility</div>
+                      <div className="text-sm text-muted-foreground">{t("Granted access to facility")}</div>
                     </div>
                   </div>
                 )}
@@ -560,10 +573,10 @@ export default function VisitorDetail() {
                     </div>
                     <div className="w-[calc(100%-4rem)] md:w-[calc(50%-2.5rem)] p-4 rounded border border-border bg-card shadow">
                       <div className="flex items-center justify-between space-x-2 mb-1">
-                        <div className="font-bold text-foreground">Checked Out</div>
-                        <time className="font-mono text-xs text-muted-foreground">{format(new Date(visitor.checkOut), "HH:mm")}</time>
+                        <div className="font-bold text-foreground">{t("Checked Out")}</div>
+                        <time className="font-mono text-xs text-muted-foreground">{formatDate(new Date(visitor.checkOut), "HH:mm")}</time>
                       </div>
-                      <div className="text-sm text-muted-foreground">Exited facility</div>
+                      <div className="text-sm text-muted-foreground">{t("Exited facility")}</div>
                     </div>
                   </div>
                 )}
@@ -573,14 +586,14 @@ export default function VisitorDetail() {
 
           <Card className="border-border bg-card">
             <CardHeader>
-              <CardTitle className="text-lg">Gadgets Carried Inside</CardTitle>
-              <CardDescription>Optional items recorded at registration. Gadget approval is separate from visitor check-in.</CardDescription>
+              <CardTitle className="text-lg">{t("Gadgets Carried Inside")}</CardTitle>
+              <CardDescription>{t("Optional items recorded at registration. Gadget approval is separate from visitor check-in.")}</CardDescription>
             </CardHeader>
             <CardContent>
               {gadgetsLoading ? (
                 <Skeleton className="h-16 w-full" />
               ) : gadgetsError ? (
-                <p role="alert" className="text-sm text-destructive">Unable to load visitor gadgets. Please refresh and try again.</p>
+                <p role="alert" className="text-sm text-destructive">{t("Unable to load visitor gadgets. Please refresh and try again.")}</p>
               ) : gadgets?.length ? (
                 <div className="space-y-3">
                   {gadgets.map((gadget) => (
@@ -588,9 +601,9 @@ export default function VisitorDetail() {
                       <div className="min-w-0">
                         <div className="font-medium">{gadget.name}</div>
                         <div className="text-sm text-muted-foreground">
-                          {[gadget.makeModel, gadget.serialNumber ? `Serial: ${gadget.serialNumber}` : null].filter(Boolean).join(" · ") || "No make/model or serial number provided"}
+                          {[gadget.makeModel, gadget.serialNumber ? `${t("Serial")}: ${gadget.serialNumber}` : null].filter(Boolean).join(" · ") || t("No make/model or serial number provided")}
                         </div>
-                        {gadget.returnedAt && <div className="mt-1 text-xs text-muted-foreground">Return verified {format(new Date(gadget.returnedAt), "PPpp")}</div>}
+                        {gadget.returnedAt && <div className="mt-1 text-xs text-muted-foreground">{t("Return verified")} {formatDate(new Date(gadget.returnedAt), "PPpp")}</div>}
                       </div>
                       <div className="flex flex-wrap items-center gap-2">
                         <Badge variant="outline" className={
@@ -598,29 +611,29 @@ export default function VisitorDetail() {
                           gadget.approvalStatus === "rejected" ? "border-destructive/30 bg-destructive/10 text-destructive" :
                           "border-yellow-500/30 bg-yellow-500/10 text-yellow-600"
                         }>
-                          {gadget.approvalStatus}
+                          {t(gadget.approvalStatus)}
                         </Badge>
                         {gadget.approvalStatus === "pending" && canReviewGadgets && visitor.status === "checked_in" && (
                           <>
-                            <Button size="sm" onClick={() => handleGadgetReview(gadget.id, "approve")} disabled={reviewGadgetMutation.isPending || returnGadgetMutation.isPending}>Approve</Button>
-                            <Button size="sm" variant="destructive" onClick={() => handleGadgetReview(gadget.id, "reject")} disabled={reviewGadgetMutation.isPending || returnGadgetMutation.isPending}>Reject</Button>
+                            <Button size="sm" onClick={() => handleGadgetReview(gadget.id, "approve")} disabled={reviewGadgetMutation.isPending || returnGadgetMutation.isPending}>{t("Approve")}</Button>
+                            <Button size="sm" variant="destructive" onClick={() => handleGadgetReview(gadget.id, "reject")} disabled={reviewGadgetMutation.isPending || returnGadgetMutation.isPending}>{t("Reject")}</Button>
                           </>
                         )}
                         {gadget.approvalStatus === "approved" && !gadget.returnedAt && canReviewGadgets && visitor.status === "checked_in" && (
-                          <Button size="sm" variant="outline" onClick={() => handleGadgetReturn(gadget.id)} disabled={returnGadgetMutation.isPending || reviewGadgetMutation.isPending}>Verify Returned</Button>
+                          <Button size="sm" variant="outline" onClick={() => handleGadgetReturn(gadget.id)} disabled={returnGadgetMutation.isPending || reviewGadgetMutation.isPending}>{t("Verify Returned")}</Button>
                         )}
                       </div>
                     </div>
                   ))}
                   {gadgets.some((gadget) => gadget.approvalStatus === "approved" && !gadget.returnedAt) && (
-                    <p className="text-sm text-amber-600">All approved gadgets must be verified as returned before the visitor can be checked out.</p>
+                    <p className="text-sm text-amber-600">{t("All approved gadgets must be verified as returned before the visitor can be checked out.")}</p>
                   )}
                   {!canReviewGadgets && gadgets.some((gadget) => gadget.approvalStatus === "approved" && !gadget.returnedAt) && (
-                    <p className="text-sm text-muted-foreground">Ask security or an administrator to verify the gadget return before checkout.</p>
+                    <p className="text-sm text-muted-foreground">{t("Ask security or an administrator to verify the gadget return before checkout.")}</p>
                   )}
                 </div>
               ) : (
-                <p className="text-sm text-muted-foreground">No gadgets were recorded for this visit.</p>
+                <p className="text-sm text-muted-foreground">{t("No gadgets were recorded for this visit.")}</p>
               )}
             </CardContent>
           </Card>
@@ -629,7 +642,7 @@ export default function VisitorDetail() {
             <CardHeader>
               <CardTitle className="flex items-center gap-2 text-lg">
                 <History className="h-4 w-4 text-primary" />
-                Activity Audit
+                {t("Activity Audit")}
               </CardTitle>
             </CardHeader>
             <CardContent>
@@ -639,26 +652,26 @@ export default function VisitorDetail() {
                   <Skeleton className="h-14 w-full" />
                 </div>
               ) : auditError ? (
-                <p role="alert" className="text-sm text-destructive">Unable to load visitor activity history.</p>
+                <p role="alert" className="text-sm text-destructive">{t("Unable to load visitor activity history.")}</p>
               ) : auditEntries?.length ? (
                 <ol className="space-y-3">
                   {auditEntries.map((entry) => (
                     <li key={entry.id} className="rounded-md border border-border bg-muted/20 p-3">
                       <div className="flex flex-col justify-between gap-1 sm:flex-row sm:items-start">
                         <div>
-                          <div className="text-sm font-semibold capitalize">{entry.action.replaceAll("_", " ")}</div>
-                          <p className="text-sm text-muted-foreground">{entry.details}</p>
-                          <p className="mt-1 text-xs text-muted-foreground">By {entry.actorEmail}</p>
+                          <div className="text-sm font-semibold capitalize">{t(entry.action.replace(/_/g, " "))}</div>
+                          <p className="text-sm text-muted-foreground">{t(entry.details)}</p>
+                          <p className="mt-1 text-xs text-muted-foreground">{t("By")} {entry.actorEmail}</p>
                         </div>
                         <time className="shrink-0 font-mono text-xs text-muted-foreground">
-                          {format(new Date(entry.createdAt), "MMM d, yyyy HH:mm:ss")}
+                          {formatDate(new Date(entry.createdAt), "MMM d, yyyy HH:mm:ss")}
                         </time>
                       </div>
                     </li>
                   ))}
                 </ol>
               ) : (
-                <p className="text-sm text-muted-foreground">No recorded activity yet.</p>
+                <p className="text-sm text-muted-foreground">{t("No recorded activity yet.")}</p>
               )}
             </CardContent>
           </Card>

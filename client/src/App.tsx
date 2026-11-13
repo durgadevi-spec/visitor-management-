@@ -3,20 +3,29 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import NotFound from "@/pages/not-found";
-import { AuthProvider } from "@/contexts/AuthContext";
+import { AuthProvider, useAuth } from "@/contexts/AuthContext";
 import { AppLayout } from "@/components/layout/AppLayout";
+import { LanguageProvider } from "@/contexts/LanguageContext";
 
 // Pages
 import Login from "@/pages/login";
+import Landing from "@/pages/landing";
 import Dashboard from "@/pages/dashboard";
 import CheckIn from "@/pages/check-in";
 import Visitors from "@/pages/visitors";
 import VisitorDetail from "@/pages/visitor";
+import VisitorPass from "@/pages/visitor-pass";
 import Reports from "@/pages/reports";
 import Blacklist from "@/pages/blacklist";
 import Users from "@/pages/users";
 import Notifications from "@/pages/notifications";
 import Settings from "@/pages/settings";
+
+function HomeRoute() {
+  const { user, isLoading } = useAuth();
+  if (isLoading) return null;
+  return user ? <AppLayout><Dashboard /></AppLayout> : <Landing />;
+}
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -32,16 +41,15 @@ function AppRoutes() {
     <Switch>
       <Route path="/login" component={Login} />
       
-      <Route path="/">
-        <AppLayout><Dashboard /></AppLayout>
-      </Route>
+      <Route path="/" component={HomeRoute} />
       <Route path="/check-in">
         <AppLayout><CheckIn /></AppLayout>
       </Route>
       <Route path="/visitors">
         <AppLayout><Visitors /></AppLayout>
       </Route>
-      <Route path="/visitor/:id">
+      <Route path="/visitor/:id" component={VisitorPass} />
+      <Route path="/visitor-record/:id">
         <AppLayout><VisitorDetail /></AppLayout>
       </Route>
       <Route path="/reports">
@@ -70,9 +78,11 @@ function App() {
     <QueryClientProvider client={queryClient}>
       <TooltipProvider>
         <WouterRouter base={import.meta.env.BASE_URL.replace(/\/$/, "")}>
-          <AuthProvider>
-            <AppRoutes />
-          </AuthProvider>
+          <LanguageProvider>
+            <AuthProvider>
+              <AppRoutes />
+            </AuthProvider>
+          </LanguageProvider>
         </WouterRouter>
         <Toaster />
       </TooltipProvider>
