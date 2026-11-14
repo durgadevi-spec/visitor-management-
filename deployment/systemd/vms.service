@@ -1,0 +1,20 @@
+[Unit]
+Description=Visitor Management System
+After=network.target
+
+[Service]
+Type=simple
+User=vms
+Group=vms
+WorkingDirectory=/opt/vms
+EnvironmentFile=/etc/vms/vms.env
+ExecStart=/usr/bin/node /opt/vms/dist/index.js
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+
+[Install]
+WantedBy=multi-user.target

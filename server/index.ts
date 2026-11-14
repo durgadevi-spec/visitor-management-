@@ -182,6 +182,15 @@ app.use((req, res, next) => {
 });
 
 async function bootstrap() {
+  if (
+    process.env.NODE_ENV === "production" &&
+    (!process.env.SESSION_SECRET ||
+      process.env.SESSION_SECRET === "vms-secret-key-2024" ||
+      process.env.SESSION_SECRET === "REPLACE_WITH_A_UNIQUE_RANDOM_SECRET")
+  ) {
+    throw new Error("Set a unique SESSION_SECRET before starting VMS in production.");
+  }
+
   const isConnected = await checkDatabaseConnection();
   if (!isConnected) {
     console.warn("⚠️  Database connection failed. Server will start but API calls may fail.");
@@ -212,8 +221,9 @@ async function bootstrap() {
   }
 
   const PORT = Number(process.env.PORT) || 5000;
-  httpServer.listen(PORT, "0.0.0.0", () => {
-    log(`Server running at http://0.0.0.0:${PORT}`);
+  const HOST = process.env.HOST || "127.0.0.1";
+  httpServer.listen(PORT, HOST, () => {
+    log(`Server running at http://${HOST}:${PORT}`);
   });
 }
 

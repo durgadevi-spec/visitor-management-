@@ -1,3 +1,4 @@
+import { useMemo, useState } from "react";
 import { 
   useGetDashboardStats, 
   useGetRecentVisitors, 
@@ -10,9 +11,10 @@ import {
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Activity, Clock, LogIn, Users, CheckCircle2, UserCheck, ShieldAlert, Printer } from "lucide-react";
+import { Activity, Clock, LogIn, Users, CheckCircle2, UserCheck, ShieldAlert, Printer, Search, X } from "lucide-react";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Input } from "@/components/ui/input";
 import { Link } from "wouter";
 import { motion, useReducedMotion } from "framer-motion";
 import { useLanguage } from "@/contexts/LanguageContext";
@@ -30,6 +32,7 @@ function escapeHtml(value: string) {
 export default function Dashboard() {
   const reduceMotion = useReducedMotion();
   const { t, formatDate } = useLanguage();
+  const [manifestSearch, setManifestSearch] = useState("");
   const { data: stats, isLoading: statsLoading } = useGetDashboardStats({
     query: { queryKey: getGetDashboardStatsQueryKey() }
   });
@@ -47,6 +50,15 @@ export default function Dashboard() {
     isLoading: insideVisitorsLoading,
     refetch: refetchVisitorsInside,
   } = useGetVisitors({ status: "checked_in" });
+
+  const filteredRecentVisitors = useMemo(() => {
+    const query = manifestSearch.trim().toLocaleLowerCase();
+    if (!query) return recentVisitors ?? [];
+    return (recentVisitors ?? []).filter((visitor) =>
+      [visitor.name, visitor.visitorId, visitor.personToMeet, visitor.mobile, visitor.purpose]
+        .some((value) => value.toLocaleLowerCase().includes(query)),
+    );
+  }, [manifestSearch, recentVisitors]);
 
   const printEmergencyRollCall = async () => {
     if (insideVisitorsLoading || insideVisitorsFetching) return;
@@ -256,18 +268,43 @@ export default function Dashboard() {
           transition={{ duration: reduceMotion ? 0 : 0.35, delay: reduceMotion ? 0 : 0.18 }}
         >
           <Card className="h-full border-border bg-card">
-            <CardHeader className="pb-4">
+            <CardHeader className="flex flex-col gap-3 pb-4 sm:flex-row sm:items-center sm:justify-between">
               <CardTitle className="text-lg font-semibold text-foreground">{t("Live Manifest")}</CardTitle>
+              <div className="relative w-full sm:max-w-64">
+                <Search aria-hidden="true" className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                <Input
+                  type="text"
+                  aria-label={t("Search live manifest")}
+                  placeholder={t("Search name, ID, host...")}
+                  value={manifestSearch}
+                  onChange={(event) => setManifestSearch(event.target.value)}
+                  className="h-9 pl-8 pr-8 text-sm"
+                />
+                {manifestSearch && (
+                  <button
+                    type="button"
+                    aria-label={t("Clear search")}
+                    onClick={() => setManifestSearch("")}
+                    className="absolute right-2 top-1/2 -translate-y-1/2 rounded-sm p-1 text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  >
+                    <X className="h-3.5 w-3.5" />
+                  </button>
+                )}
+              </div>
             </CardHeader>
             <CardContent>
               <ScrollArea className="h-[400px] pr-4">
                 <div className="space-y-3">
                 {visitorsLoading ? (
                   Array(5).fill(0).map((_, i) => <Skeleton key={i} className="h-16 w-full" />)
-                ) : recentVisitors?.length === 0 ? (
-                  <div className="text-center py-8 text-muted-foreground">{t("No recent visitors")}</div>
+                ) : filteredRecentVisitors.length === 0 ? (
+                  manifestSearch.trim() ? (
+                    <div className="text-center py-8 text-muted-foreground">{t("No visitors match your search.")}</div>
+                  ) : (
+                    <div className="text-center py-8 text-muted-foreground">{t("No recent visitors")}</div>
+                  )
                 ) : (
-                  recentVisitors?.map((visitor, index) => (
+                  filteredRecentVisitors.map((visitor, index) => (
                     <motion.div
                       key={visitor.id}
                       className="flex flex-col gap-3 rounded-lg border border-border/50 bg-background/50 p-3 transition-colors hover:bg-muted/20 sm:flex-row sm:items-center sm:justify-between"
