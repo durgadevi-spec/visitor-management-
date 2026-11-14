@@ -1,4 +1,5 @@
 import { useEffect, useState, type FormEvent } from "react";
+import { motion, useReducedMotion } from "framer-motion";
 import { Eye, EyeOff, ShieldAlert } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
 import { useLogin, useSignup } from "@/lib/api-client";
@@ -34,6 +35,7 @@ export default function Login() {
   const { user, login } = useAuth();
   const { toast } = useToast();
   const { t } = useLanguage();
+  const reduceMotion = useReducedMotion();
   const [, setLocation] = useLocation();
 
   useEffect(() => {
@@ -111,24 +113,38 @@ export default function Login() {
   const isPending = loginMutation.isPending || signupMutation.isPending;
 
   return (
-    <div className="flex min-h-screen w-full items-center justify-center bg-background p-4 text-foreground">
-      <div className="relative w-full max-w-md overflow-hidden rounded-xl border border-border bg-card shadow-2xl">
-        <div className="flex justify-end p-3 pb-0">
+    <div className="relative flex min-h-screen w-full items-center justify-center overflow-hidden bg-[#f7f6f1] p-4 text-foreground dark:bg-[#151a17]">
+      <div className="pointer-events-none absolute inset-x-0 top-0 h-96 bg-[radial-gradient(ellipse_at_75%_5%,rgba(137,160,132,0.18),transparent_55%),radial-gradient(ellipse_at_10%_70%,rgba(190,122,89,0.12),transparent_45%)]" />
+      <motion.div
+        initial={reduceMotion ? false : { opacity: 0, y: 18 }}
+        animate={reduceMotion ? undefined : { opacity: 1, y: 0 }}
+        transition={{ duration: 0.5, ease: "easeOut" }}
+        className="relative grid w-full max-w-6xl overflow-hidden rounded-3xl border border-[#e7e2d9] bg-white shadow-[0_30px_90px_-40px_rgba(57,78,59,0.32)] dark:border-white/10 dark:bg-card lg:grid-cols-[1.05fr_0.95fr]"
+      >
+        <div className="relative z-10 flex min-w-0 flex-col p-5 sm:p-8 lg:col-start-2 lg:row-start-1 lg:p-12">
+        <div className="mb-7 flex justify-end">
           <LanguageSwitcher />
         </div>
-        <div className="flex flex-col items-center justify-center space-y-3 border-b border-border bg-card-foreground/5 p-8 text-center">
-          <div className="rounded-full bg-primary/20 p-3 ring-1 ring-primary/30 shadow-[0_0_15px_rgba(var(--primary),0.3)]">
+        <div className="mb-8 flex flex-col items-start space-y-3 text-left">
+          <div className="rounded-2xl bg-[#e8eee6] p-3 text-[#58755c] ring-1 ring-[#d6e0d4] dark:bg-primary/10 dark:text-primary dark:ring-primary/30">
             <ShieldAlert className="h-8 w-8 text-primary" />
           </div>
-          <h1 className="text-2xl font-bold tracking-tight">{t("VMS Mission Control")}</h1>
-          <p className="text-sm text-muted-foreground">
+          <h1 className="text-3xl font-semibold tracking-tight text-[#26372f] dark:text-foreground sm:text-4xl">
+            {mode === "login" ? t("Welcome back!") : t("Create your account")}
+          </h1>
+          <p className="text-sm text-[#78877b] dark:text-muted-foreground">
             {mode === "login" ? t("Sign in to your account") : t("Create an employee account")}
           </p>
         </div>
 
-        <form onSubmit={handleSubmit} autoComplete="on" className="space-y-5 p-8">
+        <form onSubmit={handleSubmit} autoComplete="on" className="space-y-5">
           {mode === "signup" && (
-            <div className="space-y-2">
+            <motion.div
+              initial={reduceMotion ? false : { opacity: 0, y: 10 }}
+              animate={reduceMotion ? undefined : { opacity: 1, y: 0 }}
+              transition={{ duration: 0.3 }}
+              className="space-y-2"
+            >
               <label htmlFor="signup-name" className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
                 {t("Full Name")}
               </label>
@@ -142,7 +158,7 @@ export default function Login() {
                 required
                 className="border-border bg-background text-foreground focus-visible:ring-primary"
               />
-            </div>
+            </motion.div>
           )}
 
           <div className="space-y-2">
@@ -193,7 +209,12 @@ export default function Login() {
           </div>
 
           {mode === "signup" && (
-            <div className="space-y-2">
+            <motion.div
+              initial={reduceMotion ? false : { opacity: 0, y: 10 }}
+              animate={reduceMotion ? undefined : { opacity: 1, y: 0 }}
+              transition={{ duration: 0.3, delay: 0.05 }}
+              className="space-y-2"
+            >
               <label htmlFor="confirm-password" className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
                 {t("Confirm Password")}
               </label>
@@ -218,7 +239,7 @@ export default function Login() {
                   {showConfirmPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
                 </button>
               </div>
-            </div>
+            </motion.div>
           )}
 
           <label className="flex cursor-pointer items-center gap-2 text-sm text-muted-foreground">
@@ -271,7 +292,49 @@ export default function Login() {
             </Link>
           </div>
         </form>
-      </div>
+        </div>
+        <aside className="relative flex min-h-64 items-center justify-center overflow-hidden bg-gradient-to-br from-[#edf8fb] via-[#f4f8f6] to-[#e9f4f6] px-6 py-10 dark:from-[#26392f] dark:via-[#263229] dark:to-[#263c43] sm:min-h-80 lg:col-start-1 lg:row-start-1 lg:min-h-full lg:px-10">
+          <div className="absolute left-7 top-6 z-20 flex items-center gap-2.5">
+            <div className="flex h-9 w-9 items-center justify-center rounded-xl border border-white/80 bg-white/75 text-[#58755c] shadow-sm dark:border-white/10 dark:bg-white/10 dark:text-primary">
+              <ShieldAlert className="h-4 w-4" />
+            </div>
+            <div>
+              <div className="text-sm font-bold tracking-tight text-[#26372f] dark:text-foreground">VMS</div>
+              <div className="text-[9px] font-medium tracking-[0.12em] text-[#78877b] dark:text-muted-foreground">{t("VISITOR MANAGEMENT")}</div>
+            </div>
+          </div>
+          <div className="pointer-events-none absolute left-1/2 top-1/2 h-[70%] w-[85%] -translate-x-1/2 -translate-y-1/2 rounded-[50%] bg-white/60 blur-2xl dark:bg-white/5" />
+          <motion.div
+            initial={reduceMotion ? false : { opacity: 0, scale: 0.96 }}
+            animate={reduceMotion ? undefined : { opacity: 1, scale: 1 }}
+            transition={{ duration: 0.6, ease: "easeOut", delay: 0.12 }}
+            className="relative flex w-full max-w-[560px] items-center justify-center pt-10"
+          >
+            <motion.img
+              key={mode}
+              src={mode === "signup" ? "/signup-reception.png" : "/auth-welcome.png"}
+              alt={mode === "signup"
+                ? t("Illustration of a visitor arriving at reception")
+                : t("Illustration of a visitor being welcomed at reception")}
+              decoding="async"
+              initial={mode === "signup" && !reduceMotion ? { opacity: 0, y: 12, scale: 0.96 } : false}
+              animate={reduceMotion
+                ? undefined
+                : mode === "signup"
+                  ? { opacity: 1, scale: 1, y: [0, -7, 0] }
+                  : { y: [0, -7, 0] }}
+              transition={mode === "signup"
+                ? {
+                    opacity: { duration: 0.35 },
+                    scale: { duration: 0.35 },
+                    y: { duration: 4.5, repeat: Infinity, ease: "easeInOut" },
+                  }
+                : { duration: 4.5, repeat: Infinity, ease: "easeInOut" }}
+              className="relative z-10 max-h-[340px] w-full object-contain sm:max-h-[460px]"
+            />
+          </motion.div>
+        </aside>
+      </motion.div>
     </div>
   );
 }
