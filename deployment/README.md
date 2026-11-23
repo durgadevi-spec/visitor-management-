@@ -24,15 +24,23 @@ point and proxies both `/api` and frontend routes to that process.
 - Same-origin deployment does not require CORS. The existing Express CORS
   middleware is retained to avoid changing other integrations.
 
-## Important authentication blocker
+## Tenant and authentication setup
 
-Do not expose the current application to the public internet until its
-authentication implementation is hardened. In `server/auth.ts`,
-`verifyToken()` decodes the token payload but does not verify its signature,
-and password hashing is a custom non-cryptographic hash. A strong
-`SESSION_SECRET` alone does not fix those issues. This audit leaves auth
-behavior unchanged, as requested; a separate auth-security change is required
-before production credentials or visitor data are put online.
+The application now requires the organization/subscription migration before
+serving authenticated routes. Existing records are assigned to a default
+Business organization, and existing users must sign in again after deployment
+because the token format is now signed and expires after seven days. Legacy
+password hashes are upgraded to scrypt when the user next signs in.
+
+The first super-admin is created from `SUPERADMIN_EMAIL` and
+`SUPERADMIN_PASSWORD` at startup. The password must be at least 12 characters.
+Changing those variables does not reset an already-created super-admin
+password; manage that account through the normal account process.
+
+Before deploying, back up PostgreSQL. For the existing VMS database, run
+`npm run db:migrate` once before restarting the service. For a brand-new
+database, first run `npm run db:push`, then `npm run db:migrate`. Do not run
+`db:push:force` against the existing production database.
 
 ## Required production environment
 
@@ -44,13 +52,49 @@ HOST=127.0.0.1
 PORT=5016
 DATABASE_URL=postgresql://DB_USER:DB_PASSWORD@DB_HOST:5432/DB_NAME
 SESSION_SECRET=REPLACE_WITH_A_UNIQUE_RANDOM_SECRET
+SUPERADMIN_EMAIL=admin@example.com
+SUPERADMIN_PASSWORD=REPLACE_WITH_A_UNIQUE_PASSWORD
+SUPERADMIN_NAME=VMS Super Admin
+APP_BASE_URL=https://vms.time88.in
+MSG91_AUTH_KEY=
+MSG91_SENDER_ID=
+MSG91_TEMPLATE_REGISTRATION_LINK=
+MSG91_TEMPLATE_SUBMISSION_CONFIRMATION=
+MSG91_TEMPLATE_APPROVED=
+MSG91_TEMPLATE_REJECTED=
+MSG91_TEMPLATE_CANCELLED=
+MSG91_TEMPLATE_RESCHEDULED=
+MSG91_TEMPLATE_REMINDER=
+MSG91_DLR_WEBHOOK_SECRET=
 ```
 
 Use the real PostgreSQL connection details privately on the VPS. Generate a
 secret with `openssl rand -hex 32`; do not commit it or paste it into chat.
+Set a unique super-admin email and password in the VPS-only environment file.
 There is no `VITE_API_URL` or frontend API URL variable: the browser uses the
 same-origin `/api` path. Do not replace or copy over the project's existing
 `.env` file.
+
+Appointments and SMS are available on Business and Enterprise plans. Set
+`APP_BASE_URL` to the public HTTPS origin. Configure the MSG91 auth key, Sender
+ID, and the seven approved Flow template IDs above before sending SMS. Each
+template must use the corresponding `var1`, `var2`, etc. fields sent by VMS and
+must have the applicable India DLT registration. Set a random
+`MSG91_DLR_WEBHOOK_SECRET` and configure MSG91's delivery-report callback to
+`<APP_BASE_URL>/api/public/webhooks/msg91/dlr?secret=<that-secret>`. Provider
+acceptance is shown as “sent”; only a delivery callback is shown as “delivered”.
+Keep these credentials and the callback secret only in the server environment.
+The supplied Nginx HTTPS configuration disables access logging for registration
+and pass URLs (which contain bearer tokens) and the delivery callback (which
+contains the webhook secret).
+
+Template variables are positional: registration link (`visitor name`, appointment
+number, registration URL); submission confirmation (`visitor name`, appointment
+number); approval (`visitor name`, appointment number, pass URL, pass number,
+appointment date/time); rejection and cancellation (`visitor name`, appointment
+number, reason); rescheduling (`visitor name`, appointment number, new date/time,
+pass URL, pass number); reminder (`visitor name`, appointment number, date/time,
+pass number).
 
 ## DNS
 
@@ -116,8 +160,12 @@ URL and contact email; do not put credentials in the repository.
    su -s /bin/sh vms -c 'cd /opt/vms && npm ci && npm run check && npm run build'
    ```
 
-   Use the database already provisioned for VMS. This deployment does not run
-   schema push or migrations.
+   Use the database already provisioned for VMS. Back up the database, then
+   apply the additive migration before the service starts:
+
+   ```sh
+   su -s /bin/sh vms -c 'cd /opt/vms && npm run db:migrate'
+   ```
 
 4. Install and start the systemd service:
 
@@ -173,6 +221,7 @@ After uploading a reviewed update:
 
 ```sh
 su -s /bin/sh vms -c 'cd /opt/vms && npm ci && npm run check && npm run build'
+su -s /bin/sh vms -c 'cd /opt/vms && npm run db:migrate'
 systemctl restart vms
 systemctl status vms --no-pager
 journalctl -u vms -n 100 --no-pager

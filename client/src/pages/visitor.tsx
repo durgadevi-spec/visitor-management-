@@ -13,10 +13,14 @@ import {
   getGetVisitorsQueryKey,
   useCheckinVisitor,
   useCheckoutVisitor,
+  useRecordVisitorCheckoutBlocked,
+  useApproveVisitor,
   useReviewVisitorGadget,
   useReturnVisitorGadget,
   useUpdateVisitor,
   useGetSystemSettings,
+  useGetSubscription,
+  getGetNotificationsQueryKey,
   type UpdateVisitorInput,
 } from "@/lib/api-client";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
@@ -27,8 +31,18 @@ import { Input } from "@/components/ui/input";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { 
-  UserCircle, Printer, LogIn, LogOut, 
+  UserCircle, Printer, LogIn, LogOut, Check, X,
   Clock, ShieldAlert, FileText, Phone, Mail, Building, ArrowLeft, Pencil, History
 } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
@@ -36,6 +50,7 @@ import { useToast } from "@/hooks/use-toast";
 import { useEffect, useRef, useState } from "react";
 import { useAuth } from "@/contexts/AuthContext";
 import { useLanguage } from "@/contexts/LanguageContext";
+import { distanceInMeters } from "../../../shared/location";
 
 const editVisitorSchema = z.object({
   name: z.string().min(2, "Name is required"),
@@ -45,7 +60,38 @@ const editVisitorSchema = z.object({
   personToMeet: z.string().min(2, "Host name required"),
   idProofType: z.enum(["aadhar", "pan", "passport", "driving_license", "voter_id"]),
   idNumber: z.string().min(4, "ID Number required"),
+  idCardNumber: z.string().trim().optional(),
 });
+
+function VisitorLocationMap({
+  receptionLatitude,
+  receptionLongitude,
+  visitorLatitude,
+  visitorLongitude,
+}: {
+  receptionLatitude: number;
+  receptionLongitude: number;
+  visitorLatitude: number;
+  visitorLongitude: number;
+}) {
+  const { t } = useLanguage();
+  const metersPerDegree = 111_320;
+  const eastMeters = (visitorLongitude - receptionLongitude) * metersPerDegree *
+    Math.cos(receptionLatitude * Math.PI / 180);
+  const northMeters = (visitorLatitude - receptionLatitude) * metersPerDegree;
+  const x = Math.max(20, Math.min(220, 120 + eastMeters / 500 * 95));
+  const y = Math.max(20, Math.min(220, 120 - northMeters / 500 * 95));
+
+  return (
+    <svg viewBox="0 0 240 240" role="img" aria-label={t("Visitor position relative to reception within 500 metres")} className="mx-auto h-56 w-56">
+      <circle cx="120" cy="120" r="95" fill="hsl(var(--muted) / 0.35)" stroke="hsl(var(--border))" strokeWidth="2" />
+      <circle cx="120" cy="120" r="4" fill="hsl(var(--muted-foreground))" />
+      <circle cx={x} cy={y} r="8" fill="hsl(var(--primary))" stroke="white" strokeWidth="3" />
+      <text x="120" y="115" textAnchor="middle" className="fill-muted-foreground text-[8px]">{t("Reception")}</text>
+      <text x="120" y="232" textAnchor="middle" className="fill-muted-foreground text-[8px]">{t("500 m boundary")}</text>
+    </svg>
+  );
+}
 
 export default function VisitorDetail() {
   const { id } = useParams<{ id: string }>();
@@ -54,7 +100,14 @@ export default function VisitorDetail() {
   const { toast } = useToast();
   const { t, formatDate, language } = useLanguage();
   const { user } = useAuth();
+  const { data: subscription } = useGetSubscription();
+  const isReadOnly = subscription?.subscription.readOnly ?? false;
+  const canUseGadgets = subscription?.plan.liveFeatures.includes("gadgets") ?? false;
+  const canApproveVisitors = subscription?.plan.liveFeatures.includes("approvals") ?? false;
   const [editOpen, setEditOpen] = useState(false);
+  const [checkInCardDialogOpen, setCheckInCardDialogOpen] = useState(false);
+  const [checkInCardNumber, setCheckInCardNumber] = useState("");
+  const [checkoutConfirmOpen, setCheckoutConfirmOpen] = useState(false);
   const [qrCodeImage, setQrCodeImage] = useState<string | null>(null);
   const editForm = useForm<UpdateVisitorInput>({
     resolver: zodResolver(editVisitorSchema),
@@ -67,13 +120,15 @@ export default function VisitorDetail() {
       personToMeet: "",
       idProofType: "aadhar",
       idNumber: "",
+      idCardNumber: "",
     },
   });
   
   const { data: visitor, isLoading } = useGetVisitor(id!, {
     query: {
       enabled: !!id,
-      queryKey: getGetVisitorQueryKey(id!)
+      queryKey: getGetVisitorQueryKey(id!),
+      refetchInterval: (query) => query.state.data?.status === "checked_in" ? 5_000 : false,
     }
   });
   const { data: systemSettings } = useGetSystemSettings();
@@ -81,12 +136,12 @@ export default function VisitorDetail() {
     query: { enabled: !!id },
   });
   const { data: gadgets, isLoading: gadgetsLoading, isError: gadgetsError } = useGetVisitorGadgets(id!, {
-    query: { enabled: !!id },
+    query: { enabled: !!id && canUseGadgets },
   });
   const canReviewGadgets = user?.role === "admin" || user?.role === "security";
-  const gadgetsPendingCheckout = gadgets?.some((gadget) =>
+  const gadgetsPendingCheckout = canUseGadgets && (gadgets?.some((gadget) =>
     gadget.approvalStatus === "approved" && !gadget.returnedAt,
-  ) ?? false;
+  ) ?? false);
 
   const refreshGadgets = () => {
     queryClient.invalidateQueries({ queryKey: getGetVisitorGadgetsQueryKey(id!) });
@@ -123,11 +178,35 @@ export default function VisitorDetail() {
     mutation: {
       onSuccess: () => {
         toast({ title: t("Checked In"), description: t("Visitor has been checked in.") });
+        setCheckInCardDialogOpen(false);
+        setCheckInCardNumber("");
         queryClient.invalidateQueries({ queryKey: getGetVisitorQueryKey(id!) });
         queryClient.invalidateQueries({ queryKey: getGetVisitorAuditQueryKey(id!) });
         queryClient.invalidateQueries({ queryKey: getGetVisitorsQueryKey() });
       }
     }
+  });
+
+  const approvalMutation = useApproveVisitor({
+    mutation: {
+      onSuccess: (updated) => {
+        toast({
+          title: t(updated.status === "approved" ? "Visitor Approved" : "Visitor Rejected"),
+          description: t(updated.status === "approved"
+            ? "Administrator approval recorded. Check the visitor in when they arrive."
+            : "The visitor request has been rejected."),
+        });
+        queryClient.invalidateQueries({ queryKey: getGetVisitorQueryKey(id!) });
+        queryClient.invalidateQueries({ queryKey: getGetVisitorAuditQueryKey(id!) });
+        queryClient.invalidateQueries({ queryKey: getGetVisitorsQueryKey() });
+        queryClient.invalidateQueries({ queryKey: getGetNotificationsQueryKey() });
+      },
+      onError: (error) => toast({
+        title: t("Approval Failed"),
+        description: t(error.error),
+        variant: "destructive",
+      }),
+    },
   });
 
   const checkoutMutation = useCheckoutVisitor({
@@ -138,8 +217,33 @@ export default function VisitorDetail() {
         queryClient.invalidateQueries({ queryKey: getGetVisitorAuditQueryKey(id!) });
         queryClient.invalidateQueries({ queryKey: getGetVisitorsQueryKey() });
       },
-      onError: (error) => toast({ title: t("Check Out Failed"), description: t(error.error), variant: "destructive" }),
+      onError: (error) => {
+        toast({
+          title: t("Check Out Failed"),
+          description: t(error.error),
+          variant: "destructive",
+        });
+      },
     }
+  });
+  const blockedCheckoutMutation = useRecordVisitorCheckoutBlocked({
+    mutation: {
+      onSuccess: () => {
+        toast({
+          title: t("Checkout blocked"),
+          description: t("ID card has not been returned. Checkout cannot be completed."),
+          variant: "destructive",
+        });
+        queryClient.invalidateQueries({ queryKey: getGetVisitorQueryKey(id!) });
+        queryClient.invalidateQueries({ queryKey: getGetVisitorAuditQueryKey(id!) });
+        queryClient.invalidateQueries({ queryKey: getGetVisitorsQueryKey() });
+      },
+      onError: (error) => toast({
+        title: t("Checkout blocked"),
+        description: `${t("ID card has not been returned. Checkout cannot be completed.")} ${t("The blocked attempt could not be saved to visitor history.")} ${t(error.error)}`,
+        variant: "destructive",
+      }),
+    },
   });
 
   const reviewGadgetMutation = useReviewVisitorGadget({
@@ -180,11 +284,34 @@ export default function VisitorDetail() {
       personToMeet: visitor.personToMeet,
       idProofType: visitor.idProofType,
       idNumber: visitor.idNumber,
+      idCardNumber: visitor.idCardNumber ?? "",
     });
   }, [visitor, editOpen, editForm]);
 
-  const handleCheckin = () => checkinMutation.mutate({ id: id! });
-  const handleCheckout = () => checkoutMutation.mutate({ id: id! });
+  const handleCheckin = () => {
+    if (!visitor) return;
+    if (visitor.idCardNumber) {
+      checkinMutation.mutate({ id: id! });
+      return;
+    }
+    setCheckInCardNumber("");
+    setCheckInCardDialogOpen(true);
+  };
+  const handleCheckinWithCard = () => {
+    const idCardNumber = checkInCardNumber.trim();
+    if (!idCardNumber) {
+      toast({ title: t("ID Card Number Required"), description: t("Enter the ID card number before checking in."), variant: "destructive" });
+      return;
+    }
+    checkinMutation.mutate({ id: id!, data: { idCardNumber } });
+  };
+  const handleCheckout = () => checkoutMutation.mutate({ id: id!, data: { idCardReturned: true } });
+  const handleCheckoutBlocked = () => {
+    setCheckoutConfirmOpen(false);
+    blockedCheckoutMutation.mutate({ id: id! });
+  };
+  const handleVisitorApproval = (action: "approve" | "reject") =>
+    approvalMutation.mutate({ id: id!, data: { action } });
   const handleGadgetReview = (gadgetId: number, action: "approve" | "reject") =>
     reviewGadgetMutation.mutate({ visitorId: id!, gadgetId, action });
   const handleGadgetReturn = (gadgetId: number) =>
@@ -289,6 +416,7 @@ export default function VisitorDetail() {
       case "checked_out": return "bg-green-500/20 text-green-400 border-green-500/30";
       case "pending": return "bg-yellow-500/20 text-yellow-400 border-yellow-500/30";
       case "rejected": return "bg-red-500/20 text-red-400 border-red-500/30";
+      case "cancelled": return "bg-red-500/20 text-red-400 border-red-500/30";
       case "approved": return "bg-purple-500/20 text-purple-400 border-purple-500/30";
       case "scheduled": return "bg-amber-500/20 text-amber-500 border-amber-500/30";
       default: return "bg-gray-500/20 text-gray-400 border-gray-500/30";
@@ -300,6 +428,24 @@ export default function VisitorDetail() {
   }
 
   if (!visitor) return <div>{t("Visitor not found")}</div>;
+  const canViewCurrentLocation = user?.role === "admin" || user?.role === "security";
+  const receptionLocationConfigured = systemSettings?.receptionLatitude !== null &&
+    systemSettings?.receptionLatitude !== undefined &&
+    systemSettings?.receptionLongitude !== null &&
+    systemSettings?.receptionLongitude !== undefined;
+  const hasCurrentLocation = visitor.currentLocationLatitude !== null &&
+    visitor.currentLocationLongitude !== null &&
+    visitor.currentLocationUpdatedAt !== null;
+  const visitorDistanceFromReception = hasCurrentLocation && receptionLocationConfigured
+    ? Math.round(distanceInMeters(
+      systemSettings.receptionLatitude!,
+      systemSettings.receptionLongitude!,
+      visitor.currentLocationLatitude!,
+      visitor.currentLocationLongitude!,
+    ))
+    : null;
+  const locationIsStale = hasCurrentLocation &&
+    Date.now() - new Date(visitor.currentLocationUpdatedAt!).getTime() > 90_000;
 
   return (
     <div className="space-y-6">
@@ -312,11 +458,31 @@ export default function VisitorDetail() {
           <Button variant="outline" onClick={() => setLocation("/")}>
             <ArrowLeft className="mr-2 h-4 w-4" /> {t("Back to Dashboard")}
           </Button>
-          <Button variant="outline" onClick={() => setEditOpen(true)}>
+          <Button variant="outline" onClick={() => setEditOpen(true)} disabled={isReadOnly}>
             <Pencil className="mr-2 h-4 w-4" /> {t("Edit Visitor")}
           </Button>
-          {(visitor.status === "scheduled" || visitor.status === "pending" || visitor.status === "approved") && (
-            <Button variant="default" className="bg-blue-500 hover:bg-blue-600 text-white" onClick={handleCheckin} disabled={checkinMutation.isPending}>
+          {user?.role === "admin" && canApproveVisitors &&
+            (visitor.status === "pending" || (systemSettings?.requireApproval && visitor.status === "scheduled")) && (
+            <>
+              <Button
+                variant="outline"
+                onClick={() => handleVisitorApproval("reject")}
+                disabled={approvalMutation.isPending || isReadOnly}
+              >
+                <X className="mr-2 h-4 w-4" /> {t("Reject")}
+              </Button>
+              <Button
+                variant="default"
+                onClick={() => handleVisitorApproval("approve")}
+                disabled={approvalMutation.isPending || isReadOnly}
+              >
+                <Check className="mr-2 h-4 w-4" /> {t("Approve")}
+              </Button>
+            </>
+          )}
+          {systemSettings && (visitor.status === "approved" ||
+            (!systemSettings.requireApproval && (visitor.status === "scheduled" || visitor.status === "pending"))) && (
+            <Button variant="default" className="bg-blue-500 hover:bg-blue-600 text-white" onClick={handleCheckin} disabled={checkinMutation.isPending || isReadOnly}>
               <LogIn className="mr-2 h-4 w-4" /> {t("Check In")}
             </Button>
           )}
@@ -324,8 +490,8 @@ export default function VisitorDetail() {
             <Button
               variant="default"
               className="bg-green-500 hover:bg-green-600 text-white"
-              onClick={handleCheckout}
-              disabled={checkoutMutation.isPending || gadgetsLoading || gadgetsError || gadgetsPendingCheckout}
+              onClick={() => setCheckoutConfirmOpen(true)}
+              disabled={checkoutMutation.isPending || (canUseGadgets && (gadgetsLoading || gadgetsError || gadgetsPendingCheckout)) || isReadOnly}
             >
               <LogOut className="mr-2 h-4 w-4" /> {gadgetsPendingCheckout ? t("Verify Gadget Returns") : t("Check Out")}
             </Button>
@@ -410,9 +576,16 @@ export default function VisitorDetail() {
                   <FormMessage />
                 </FormItem>
               )} />
+              <FormField control={editForm.control} name="idCardNumber" render={({ field }) => (
+                <FormItem>
+                  <FormLabel>{t("ID Card Number")}</FormLabel>
+                  <FormControl><Input {...field} /></FormControl>
+                  <FormMessage />
+                </FormItem>
+              )} />
               <div className="flex justify-end gap-2 pt-2">
                 <Button type="button" variant="outline" onClick={() => setEditOpen(false)}>{t("Cancel")}</Button>
-                <Button type="submit" disabled={updateMutation.isPending}>
+                <Button type="submit" disabled={updateMutation.isPending || isReadOnly}>
                   {updateMutation.isPending ? t("Saving...") : t("Save Changes")}
                 </Button>
               </div>
@@ -420,6 +593,48 @@ export default function VisitorDetail() {
           </Form>
         </DialogContent>
       </Dialog>
+
+      <Dialog open={checkInCardDialogOpen} onOpenChange={setCheckInCardDialogOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>{t("ID Card Number Required")}</DialogTitle>
+          </DialogHeader>
+          <p className="text-sm text-muted-foreground">{t("Enter the ID card number being issued before checking in this visitor.")}</p>
+          <div className="space-y-2">
+            <label htmlFor="check-in-id-card-number" className="text-sm font-medium">{t("ID Card Number")}</label>
+            <Input
+              id="check-in-id-card-number"
+              value={checkInCardNumber}
+              onChange={(event) => setCheckInCardNumber(event.target.value)}
+              maxLength={100}
+              autoFocus
+            />
+          </div>
+          <div className="flex justify-end gap-2">
+            <Button type="button" variant="outline" onClick={() => setCheckInCardDialogOpen(false)}>{t("Cancel")}</Button>
+            <Button type="button" onClick={handleCheckinWithCard} disabled={checkinMutation.isPending}>
+              {checkinMutation.isPending ? t("Checking In...") : t("Check In")}
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      <AlertDialog open={checkoutConfirmOpen} onOpenChange={setCheckoutConfirmOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{t("Confirm ID card return")}</AlertDialogTitle>
+            <AlertDialogDescription>
+              {t("Has the visitor returned the ID card (Card No:")} {visitor.idCardNumber?.trim() || t("Not recorded")})?
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel onClick={handleCheckoutBlocked} disabled={blockedCheckoutMutation.isPending}>{t("No")}</AlertDialogCancel>
+            <AlertDialogAction onClick={handleCheckout} disabled={checkoutMutation.isPending}>
+              {t("Yes")}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       {visitor.isBlacklisted && (
         <div className="rounded-lg border border-destructive/40 bg-destructive/10 p-4 text-sm text-destructive">
@@ -516,6 +731,22 @@ export default function VisitorDetail() {
                   <div className="font-mono font-medium">{visitor.idNumber}</div>
                 </div>
                 <div>
+                  <div className="text-xs text-muted-foreground uppercase tracking-wider mb-1">{t("ID Card Number")}</div>
+                  <div className="font-mono font-medium">{visitor.idCardNumber || t("Not recorded")}</div>
+                </div>
+                <div>
+                  <div className="text-xs text-muted-foreground uppercase tracking-wider mb-1">{t("ID Card Return Status")}</div>
+                  <div className="font-medium">
+                    {visitor.idCardReturned === true
+                      ? t("Returned")
+                      : visitor.idCardReturned === false
+                        ? t("Not returned")
+                        : visitor.status === "checked_out"
+                          ? t("Not verified")
+                          : t("Not returned yet")}
+                  </div>
+                </div>
+                <div>
                   <div className="text-xs text-muted-foreground uppercase tracking-wider mb-1 flex items-center gap-1"><Clock className="h-3 w-3"/> {t("Duration")}</div>
                   <div className="font-medium">{visitor.duration || (visitor.checkIn ? t("In Progress") : t("Not checked in"))}</div>
                 </div>
@@ -528,6 +759,44 @@ export default function VisitorDetail() {
               </div>
             </CardContent>
           </Card>
+
+          {canViewCurrentLocation && visitor.status === "checked_in" && (
+            <Card className="border-border bg-card">
+              <CardHeader>
+                <CardTitle className="text-lg">{t("Current visitor location")}</CardTitle>
+                <CardDescription>{t("Only the latest location shared from inside the 500 m reception boundary is shown.")}</CardDescription>
+              </CardHeader>
+              <CardContent>
+                {!receptionLocationConfigured ? (
+                  <p className="text-sm text-muted-foreground">{t("Set the reception location in Settings to enable visitor tracking.")}</p>
+                ) : hasCurrentLocation ? (
+                  <div className="grid gap-4 sm:grid-cols-[220px_1fr] sm:items-center">
+                    <VisitorLocationMap
+                      receptionLatitude={systemSettings.receptionLatitude!}
+                      receptionLongitude={systemSettings.receptionLongitude!}
+                      visitorLatitude={visitor.currentLocationLatitude!}
+                      visitorLongitude={visitor.currentLocationLongitude!}
+                    />
+                    <div className="space-y-2 text-sm">
+                      <Badge variant={locationIsStale ? "outline" : "secondary"}>
+                        {t(locationIsStale ? "Location update is stale" : "Inside reception boundary")}
+                      </Badge>
+                      <p>
+                        {t("Distance from reception")}: {visitorDistanceFromReception} m
+                      </p>
+                      <p className="text-muted-foreground">
+                        {t("Last updated")}: {formatDate(new Date(visitor.currentLocationUpdatedAt!), "MMM d, HH:mm:ss")}
+                      </p>
+                    </div>
+                  </div>
+                ) : (
+                  <p className="text-sm text-muted-foreground">
+                    {t("No location is being shared. The visitor must opt in from their QR pass.")}
+                  </p>
+                )}
+              </CardContent>
+            </Card>
+          )}
 
           <Card className="border-border bg-card">
             <CardHeader>
@@ -584,7 +853,7 @@ export default function VisitorDetail() {
             </CardContent>
           </Card>
 
-          <Card className="border-border bg-card">
+          {canUseGadgets && <Card className="border-border bg-card">
             <CardHeader>
               <CardTitle className="text-lg">{t("Gadgets Carried Inside")}</CardTitle>
               <CardDescription>{t("Optional items recorded at registration. Gadget approval is separate from visitor check-in.")}</CardDescription>
@@ -615,12 +884,12 @@ export default function VisitorDetail() {
                         </Badge>
                         {gadget.approvalStatus === "pending" && canReviewGadgets && visitor.status === "checked_in" && (
                           <>
-                            <Button size="sm" onClick={() => handleGadgetReview(gadget.id, "approve")} disabled={reviewGadgetMutation.isPending || returnGadgetMutation.isPending}>{t("Approve")}</Button>
-                            <Button size="sm" variant="destructive" onClick={() => handleGadgetReview(gadget.id, "reject")} disabled={reviewGadgetMutation.isPending || returnGadgetMutation.isPending}>{t("Reject")}</Button>
+                            <Button size="sm" onClick={() => handleGadgetReview(gadget.id, "approve")} disabled={reviewGadgetMutation.isPending || returnGadgetMutation.isPending || isReadOnly}>{t("Approve")}</Button>
+                            <Button size="sm" variant="destructive" onClick={() => handleGadgetReview(gadget.id, "reject")} disabled={reviewGadgetMutation.isPending || returnGadgetMutation.isPending || isReadOnly}>{t("Reject")}</Button>
                           </>
                         )}
                         {gadget.approvalStatus === "approved" && !gadget.returnedAt && canReviewGadgets && visitor.status === "checked_in" && (
-                          <Button size="sm" variant="outline" onClick={() => handleGadgetReturn(gadget.id)} disabled={returnGadgetMutation.isPending || reviewGadgetMutation.isPending}>{t("Verify Returned")}</Button>
+                          <Button size="sm" variant="outline" onClick={() => handleGadgetReturn(gadget.id)} disabled={returnGadgetMutation.isPending || reviewGadgetMutation.isPending || isReadOnly}>{t("Verify Returned")}</Button>
                         )}
                       </div>
                     </div>
@@ -636,7 +905,7 @@ export default function VisitorDetail() {
                 <p className="text-sm text-muted-foreground">{t("No gadgets were recorded for this visit.")}</p>
               )}
             </CardContent>
-          </Card>
+          </Card>}
 
           <Card className="border-border bg-card">
             <CardHeader>

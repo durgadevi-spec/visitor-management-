@@ -4,7 +4,8 @@ import {
   getGetBlacklistQueryKey,
   useAddToBlacklist,
   useUpdateBlacklist,
-  useRemoveFromBlacklist
+  useRemoveFromBlacklist,
+  useGetSubscription,
 } from "@/lib/api-client";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -36,6 +37,8 @@ export default function Blacklist() {
   const [editingEntry, setEditingEntry] = useState<{ id: number; name: string; mobile: string; reason: string } | null>(null);
   const queryClient = useQueryClient();
   const { toast } = useToast();
+  const { data: subscription } = useGetSubscription();
+  const isReadOnly = subscription?.subscription.readOnly ?? false;
 
   const { data: blacklist, isLoading } = useGetBlacklist({
     query: {
@@ -94,6 +97,7 @@ export default function Blacklist() {
   );
 
   const onSubmit = (data: z.infer<typeof blacklistSchema>) => {
+    if (isReadOnly) return;
     addMutation.mutate({ data });
   };
 
@@ -103,10 +107,11 @@ export default function Blacklist() {
   };
 
   const onEditSubmit = (data: z.infer<typeof blacklistSchema>) => {
-    if (editingEntry) updateMutation.mutate({ id: editingEntry.id, data });
+    if (editingEntry && !isReadOnly) updateMutation.mutate({ id: editingEntry.id, data });
   };
 
   const handleRemove = (id: number) => {
+    if (isReadOnly) return;
     if (confirm(t("Are you sure you want to remove this restriction?"))) {
       removeMutation.mutate({ id });
     }
@@ -141,7 +146,7 @@ export default function Blacklist() {
           />
         <Dialog open={open} onOpenChange={setOpen}>
           <DialogTrigger asChild>
-            <Button variant="destructive" className="bg-destructive hover:bg-destructive/90 text-white">
+            <Button variant="destructive" className="bg-destructive hover:bg-destructive/90 text-white" disabled={isReadOnly}>
               <PlusCircle className="mr-2 h-4 w-4" /> {t("Add Restriction")}
             </Button>
           </DialogTrigger>
@@ -172,7 +177,7 @@ export default function Blacklist() {
                     <FormMessage />
                   </FormItem>
                 )} />
-                <Button type="submit" className="w-full bg-destructive text-white hover:bg-destructive/90" disabled={addMutation.isPending}>
+                <Button type="submit" className="w-full bg-destructive text-white hover:bg-destructive/90" disabled={addMutation.isPending || isReadOnly}>
                   {addMutation.isPending ? t("Adding...") : t("Enforce Restriction")}
                 </Button>
               </form>
@@ -234,10 +239,10 @@ export default function Blacklist() {
                     <TableCell className="text-sm">{formatDate(new Date(entry.createdAt), "MMM d, yyyy")}</TableCell>
                     <TableCell className="text-right">
                       <div className="flex justify-end gap-1">
-                        <Button variant="ghost" size="icon" aria-label={`Edit ${entry.name}`} onClick={() => openEditDialog(entry)} className="text-muted-foreground hover:text-foreground">
+                        <Button variant="ghost" size="icon" aria-label={`Edit ${entry.name}`} onClick={() => openEditDialog(entry)} disabled={isReadOnly} className="text-muted-foreground hover:text-foreground">
                           <Pencil className="h-4 w-4" />
                         </Button>
-                        <Button variant="ghost" size="icon" aria-label={`Remove ${entry.name}`} onClick={() => handleRemove(entry.id)} className="text-muted-foreground hover:text-foreground">
+                        <Button variant="ghost" size="icon" aria-label={`Remove ${entry.name}`} onClick={() => handleRemove(entry.id)} disabled={isReadOnly} className="text-muted-foreground hover:text-foreground">
                           <Trash2 className="h-4 w-4" />
                         </Button>
                       </div>
@@ -277,7 +282,7 @@ export default function Blacklist() {
                   <FormMessage />
                 </FormItem>
               )} />
-              <Button type="submit" className="w-full" disabled={updateMutation.isPending}>
+              <Button type="submit" className="w-full" disabled={updateMutation.isPending || isReadOnly}>
                 {updateMutation.isPending ? t("Saving...") : t("Save Changes")}
               </Button>
             </form>

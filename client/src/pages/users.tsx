@@ -26,6 +26,8 @@ import { useAuth } from "@/contexts/AuthContext";
 import { Redirect } from "wouter";
 import { motion, useReducedMotion } from "framer-motion";
 import { useLanguage } from "@/contexts/LanguageContext";
+import { useGetSubscription } from "@/lib/api-client";
+import { Link } from "wouter";
 
 const userSchema = z.object({
   name: z.string().min(2, "Name required"),
@@ -49,6 +51,11 @@ export default function Users() {
   const queryClient = useQueryClient();
   const { toast } = useToast();
   const { user: currentUser } = useAuth();
+  const { data: subscription } = useGetSubscription();
+  const isReadOnly = subscription?.subscription.readOnly ?? false;
+  const staffLimit = subscription?.plan.limits.staffUsers;
+  const atStaffLimit = staffLimit !== null && staffLimit !== undefined &&
+    (subscription?.usage.staffUsers ?? 0) >= staffLimit;
 
   if (currentUser?.role !== "admin") {
     return <Redirect to="/" />;
@@ -113,7 +120,12 @@ export default function Users() {
 
   const handleEdit = (employee: User) => {
     setEditingUser(employee);
-    editForm.reset({ name: employee.name, email: employee.email, password: "", role: employee.role });
+    editForm.reset({
+      name: employee.name,
+      email: employee.email,
+      password: "",
+      role: employee.role === "superadmin" ? "employee" : employee.role,
+    });
   };
 
   const onEditSubmit = (data: z.infer<typeof editUserSchema>) => {
@@ -157,6 +169,12 @@ export default function Users() {
             {t("Access Management")}
           </h1>
           <p className="text-sm text-muted-foreground">{t("Manage operators and clearance levels.")}</p>
+          {(isReadOnly || atStaffLimit) && (
+            <p className="mt-1 text-xs text-muted-foreground">
+              {t(isReadOnly ? "Editing is disabled for this subscription." : "Your plan's staff-user limit has been reached.")}{" "}
+              <Link href="/billing" className="font-medium text-primary underline">{t("View billing")}</Link>
+            </p>
+          )}
         </div>
         <motion.img
           src="/users-team-illustration.png"
@@ -170,7 +188,7 @@ export default function Users() {
         />
         <Dialog open={open} onOpenChange={setOpen}>
           <DialogTrigger asChild>
-            <Button variant="default" className="bg-primary hover:bg-primary/90 text-primary-foreground">
+            <Button variant="default" className="bg-primary hover:bg-primary/90 text-primary-foreground" disabled={isReadOnly || atStaffLimit}>
               <PlusCircle className="mr-2 h-4 w-4" /> {t("Provision Operator")}
             </Button>
           </DialogTrigger>
@@ -219,7 +237,7 @@ export default function Users() {
                     <FormMessage />
                   </FormItem>
                 )} />
-                <Button type="submit" className="w-full bg-primary" disabled={createMutation.isPending}>
+                <Button type="submit" className="w-full bg-primary" disabled={createMutation.isPending || isReadOnly || atStaffLimit}>
                   {createMutation.isPending ? t("Provisioning...") : t("Create Operator")}
                 </Button>
               </form>
@@ -280,7 +298,7 @@ export default function Users() {
                   <FormMessage />
                 </FormItem>
               )} />
-              <Button type="submit" className="w-full bg-primary" disabled={updateMutation.isPending}>
+              <Button type="submit" className="w-full bg-primary" disabled={updateMutation.isPending || isReadOnly}>
                 {updateMutation.isPending ? t("Saving Changes...") : t("Save Changes")}
               </Button>
             </form>
@@ -336,6 +354,7 @@ export default function Users() {
                         variant="ghost"
                         size="icon"
                         onClick={() => handleEdit(u)}
+                        disabled={isReadOnly}
                         className="text-muted-foreground hover:text-primary"
                         title={`Edit ${u.name}`}
                         aria-label={`Edit ${u.name}`}
@@ -343,7 +362,7 @@ export default function Users() {
                         <Pencil className="h-4 w-4" />
                       </Button>
                       {u.id !== currentUser?.id && (
-                        <Button variant="ghost" size="icon" onClick={() => handleDelete(u.id)} className="text-muted-foreground hover:text-destructive hover:bg-destructive/10">
+                        <Button variant="ghost" size="icon" onClick={() => handleDelete(u.id)} disabled={isReadOnly} className="text-muted-foreground hover:text-destructive hover:bg-destructive/10">
                           <Trash2 className="h-4 w-4" />
                         </Button>
                       )}

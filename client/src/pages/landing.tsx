@@ -17,6 +17,7 @@ import {
 import { Link } from "wouter";
 import { useLanguage } from "@/contexts/LanguageContext";
 import { LanguageSwitcher } from "@/components/LanguageSwitcher";
+import { LIVE_FEATURE_LABELS, PLANS, type BillingCycle } from "../../../shared/plans";
 import {
   Dialog,
   DialogContent,
@@ -190,6 +191,7 @@ export default function Landing() {
   const { t } = useLanguage();
   const [demoOpen, setDemoOpen] = useState(false);
   const [demoContactMethod, setDemoContactMethod] = useState<"whatsapp" | "email">("whatsapp");
+  const [pricingCycle, setPricingCycle] = useState<BillingCycle>("annual");
   const reveal = reduceMotion
     ? { initial: false as const, whileInView: { opacity: 1, y: 0 } }
     : { initial: { opacity: 0, y: 24 }, whileInView: { opacity: 1, y: 0 } };
@@ -236,6 +238,7 @@ export default function Landing() {
         <nav className="hidden items-center gap-2 text-sm md:flex" aria-label="Main navigation">
           <a className="rounded-lg border border-[#d6e0d4] bg-white/70 px-3 py-2 font-medium text-[#40564a] shadow-sm transition-all hover:border-[#afc1ad] hover:bg-white hover:text-[#26372f] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#58755c]/30" href="#features">{t("Features")}</a>
           <a className="rounded-lg border border-[#d6e0d4] bg-white/70 px-3 py-2 font-medium text-[#40564a] shadow-sm transition-all hover:border-[#afc1ad] hover:bg-white hover:text-[#26372f] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#58755c]/30" href="#how-it-works">{t("How it works")}</a>
+          <a className="rounded-lg border border-[#d6e0d4] bg-white/70 px-3 py-2 font-medium text-[#40564a] shadow-sm transition-all hover:border-[#afc1ad] hover:bg-white hover:text-[#26372f] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#58755c]/30" href="#pricing">{t("Pricing")}</a>
           <a className="rounded-lg border border-[#d6e0d4] bg-white/70 px-3 py-2 font-medium text-[#40564a] shadow-sm transition-all hover:border-[#afc1ad] hover:bg-white hover:text-[#26372f] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#58755c]/30" href="#faq">{t("FAQ")}</a>
         </nav>
         <div className="flex w-full items-center justify-between gap-1 sm:w-auto sm:shrink-0 sm:justify-end sm:gap-3">
@@ -461,6 +464,102 @@ export default function Landing() {
               ))}
             </div>
           </motion.div>
+        </div>
+      </section>
+
+      <section id="pricing" className="scroll-mt-6 border-y border-[#e5e9e2] bg-white py-20 sm:py-24">
+        <div className="mx-auto max-w-[1600px] px-5 sm:px-8 lg:px-10">
+          <motion.div {...reveal} viewport={{ once: true, amount: 0.2 }} transition={{ duration: 0.55 }} className="mx-auto max-w-2xl text-center">
+            <div className="text-xs font-semibold uppercase tracking-[0.2em] text-[#a95f46]">{t("Simple, transparent plans")}</div>
+            <h2 className="mt-4 text-3xl font-semibold tracking-tight text-[#26372f] sm:text-4xl">{t("Plans that grow with your front desk.")}</h2>
+            <p className="mt-4 text-sm leading-6 text-[#78877b] sm:text-base">{t("Every plan keeps visitor records organized. Choose the limits and reporting tools that fit your team.")}</p>
+          </motion.div>
+          <div className="mt-7 flex flex-col items-center gap-3">
+            <div className="inline-flex rounded-lg border border-[#dfe5dc] bg-[#f7f8f4] p-1">
+              {(["annual", "monthly"] as const).map((cycle) => (
+                <button
+                  key={cycle}
+                  type="button"
+                  onClick={() => setPricingCycle(cycle)}
+                  className={`rounded-md px-4 py-2 text-sm font-medium ${pricingCycle === cycle ? "bg-[#58755c] text-white shadow-sm" : "text-[#53665a] hover:text-[#26372f]"}`}
+                >
+                  {cycle === "annual" ? t("Yearly") : t("Monthly")}
+                </button>
+              ))}
+            </div>
+            {pricingCycle === "annual" && (
+              <span className="rounded-full bg-[#edf2eb] px-3 py-1 text-xs font-semibold text-[#58755c]">{t("Save up to 20% with yearly billing.")}</span>
+            )}
+          </div>
+          <div className="mt-9 grid items-stretch gap-4 lg:grid-cols-3">
+            {Object.values(PLANS).map((plan, index) => {
+              const price = pricingCycle === "annual" ? plan.annualMonthlyPrice : plan.monthlyPrice;
+              return (
+                <motion.article
+                  key={plan.id}
+                  {...reveal}
+                  viewport={{ once: true, amount: 0.15 }}
+                  transition={{ duration: 0.5, delay: index * 0.08 }}
+                  className={`flex h-full flex-col rounded-2xl border p-6 shadow-sm ${plan.id === "business" ? "border-[#789277] bg-[#f8faf6] ring-1 ring-[#789277]/30" : "border-[#e1e6de] bg-[#fffefa]"}`}
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <h3 className="text-xl font-semibold text-[#26372f]">{t(plan.name)}</h3>
+                    {plan.id === "business" && <span className="rounded-full bg-[#58755c] px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wide text-white">{t("Most popular")}</span>}
+                  </div>
+                  <p className="mt-2 min-h-10 text-sm leading-5 text-[#78877b]">
+                    {plan.id === "starter" ? t("For growing visitor desks.") : plan.id === "business" ? t("For busy teams with more reporting needs.") : t("For multi-location organizations.")}
+                  </p>
+                  <div className="mt-5 min-h-[72px]">
+                    {price === null ? (
+                      <p className="text-2xl font-semibold text-[#26372f]">{t("Contact sales")}</p>
+                    ) : (
+                      <>
+                        <div className="flex items-baseline gap-1">
+                          <span className="text-3xl font-bold tracking-tight text-[#26372f]">{new Intl.NumberFormat("en-IN", { style: "currency", currency: "INR", maximumFractionDigits: 0 }).format(price)}</span>
+                          <span className="text-sm text-[#78877b]">{t("/ month")}</span>
+                        </div>
+                        <p className="mt-1 text-xs text-[#78877b]">
+                          {pricingCycle === "annual"
+                            ? `${t("Billed annually")} · ${new Intl.NumberFormat("en-IN", { style: "currency", currency: "INR", maximumFractionDigits: 0 }).format(price * 12)} ${t("per year")}`
+                            : t("Billed monthly")}
+                        </p>
+                      </>
+                    )}
+                  </div>
+                  <ul className="mt-4 space-y-2 border-y border-[#e7ebe4] py-4 text-sm text-[#53665a]">
+                    <li>{plan.limits.visitorsPerMonth === null ? t("Unlimited visitors") : `${plan.limits.visitorsPerMonth.toLocaleString("en-IN")} ${t("visitors / month")}`}</li>
+                    <li>{plan.limits.staffUsers === null ? t("Unlimited staff users") : `${plan.limits.staffUsers} ${t("staff users")}`}</li>
+                    <li>{plan.limits.locations === null ? t("Unlimited locations") : `${plan.limits.locations} ${t("location")}`}</li>
+                    <li>{plan.limits.auditRetentionDays === null ? t("Unlimited audit retention") : `${plan.limits.auditRetentionDays} ${t("days audit retention")}`}</li>
+                  </ul>
+                  <ul className="mt-4 flex-1 space-y-2">
+                    {plan.liveFeatures.map((feature) => (
+                      <li key={feature} className="flex items-start gap-2 text-sm text-[#40564a]">
+                        <Check className="mt-0.5 h-4 w-4 shrink-0 text-[#58755c]" />
+                        <span>{t(LIVE_FEATURE_LABELS[feature])}</span>
+                      </li>
+                    ))}
+                    {plan.plannedFeatures.map((feature) => (
+                      <li key={feature.key} className="flex items-start gap-2 text-sm text-[#78877b]">
+                        <Clock3 className="mt-0.5 h-4 w-4 shrink-0" />
+                        <span>{t(feature.label)} <span className="ml-1 rounded-full border border-[#d6e0d4] px-2 py-0.5 text-[10px] font-medium">{t("Coming soon")}</span></span>
+                      </li>
+                    ))}
+                  </ul>
+                  {plan.id === "enterprise" ? (
+                    <button type="button" onClick={() => setDemoOpen(true)} className="mt-6 inline-flex min-h-11 items-center justify-center rounded-xl border border-[#bdcfba] bg-white px-5 text-sm font-semibold text-[#40564a] transition hover:-translate-y-0.5 hover:bg-[#f4f6f1]">
+                      {t("Contact sales")}
+                    </button>
+                  ) : (
+                    <Link href="/login?mode=signup" className="mt-6 inline-flex min-h-11 items-center justify-center rounded-xl bg-[#58755c] px-5 text-sm font-semibold text-white transition hover:-translate-y-0.5 hover:bg-[#49664d]">
+                      {t("Start 14-day Business trial")}
+                    </Link>
+                  )}
+                </motion.article>
+              );
+            })}
+          </div>
+          <p className="mt-5 text-center text-xs text-[#78877b]">{t("Plan changes are reviewed manually. Online payments are not enabled.")}</p>
         </div>
       </section>
 

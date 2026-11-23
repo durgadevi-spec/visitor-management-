@@ -3,7 +3,7 @@ import { useForm } from "react-hook-form";
 import { z } from "zod";
 import { zodResolver } from "@hookform/resolvers/zod";
 import type { IScannerControls } from "@zxing/browser";
-import { useCreateVisitor, useGetBlacklist, useGetSystemSettings, useLookupVisitorsByMobile } from "@/lib/api-client";
+import { useCreateVisitor, useGetBlacklist, useGetSystemSettings, useGetSubscription, useLookupVisitorsByMobile, verifyAppointmentPass } from "@/lib/api-client";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -12,6 +12,7 @@ import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Camera, X, Scan, UserCircle, UserRound, CalendarDays, Upload, QrCode, Laptop, Plus, Trash2 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
+import { compressPhoto } from "@/lib/photo";
 import { useLocation } from "wouter";
 import { motion } from "framer-motion";
 import { useLanguage } from "@/contexts/LanguageContext";
@@ -21,6 +22,7 @@ const checkInSchema = z.object({
   name: z.string().min(2, "Name is required"),
   mobile: z.string().regex(/^\d{10}$/, "Mobile number must be exactly 10 digits"),
   email: z.string().email().optional().or(z.literal("")),
+  idCardNumber: z.string().trim().max(100, "ID card number must be 100 characters or fewer").optional(),
   purpose: z.string().min(2, "Purpose required"),
   personToMeet: z.string().min(2, "Host name required"),
   idProofType: z.enum(["aadhar", "pan", "passport", "driving_license", "voter_id"]),
@@ -30,39 +32,6 @@ const checkInSchema = z.object({
 
 type CheckInForm = z.infer<typeof checkInSchema>;
 type GadgetForm = { name: string; makeModel: string; serialNumber: string };
-
-function compressPhoto(source: CanvasImageSource, width: number, height: number): Promise<string> {
-  if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
-    return Promise.reject(new Error("The selected photo has invalid dimensions."));
-  }
-
-  const maxDimension = 1280;
-  const scale = Math.min(1, maxDimension / Math.max(width, height));
-  const canvas = document.createElement("canvas");
-  canvas.width = Math.round(width * scale);
-  canvas.height = Math.round(height * scale);
-
-  const context = canvas.getContext("2d");
-  if (!context) return Promise.reject(new Error("Unable to process the selected photo."));
-  context.drawImage(source, 0, 0, canvas.width, canvas.height);
-
-  return new Promise((resolve, reject) => {
-    canvas.toBlob((blob) => {
-      if (!blob) {
-        reject(new Error("Unable to process the selected photo."));
-        return;
-      }
-
-      const reader = new FileReader();
-      reader.onload = () => {
-        if (typeof reader.result === "string") resolve(reader.result);
-        else reject(new Error("Unable to read the processed photo."));
-      };
-      reader.onerror = () => reject(new Error("Unable to read the processed photo."));
-      reader.readAsDataURL(blob);
-    }, "image/jpeg", 0.8);
-  });
-}
 
 export default function CheckIn() {
   const { toast } = useToast();
@@ -95,6 +64,7 @@ export default function CheckIn() {
       name: "",
       mobile: "",
       email: "",
+      idCardNumber: "",
       purpose: "",
       personToMeet: "",
       idProofType: "aadhar",
@@ -105,6 +75,13 @@ export default function CheckIn() {
 
   const { data: blacklistEntries } = useGetBlacklist();
   const { data: systemSettings } = useGetSystemSettings();
+  const { data: subscription } = useGetSubscription();
+  const isReadOnly = subscription?.subscription.readOnly ?? false;
+  const visitorLimit = subscription?.plan.limits.visitorsPerMonth;
+  const visitorLimitReached = visitorLimit !== null && visitorLimit !== undefined &&
+    (subscription?.usage.visitorsThisMonth ?? 0) >= visitorLimit;
+  const canUseGadgets = subscription?.plan.liveFeatures.includes("gadgets") ?? false;
+  const canScanPass = subscription?.plan.liveFeatures.includes("qrScanning") ?? false;
 
   const watchedName = form.watch("name");
   const watchedMobile = form.watch("mobile");
@@ -149,7 +126,11 @@ export default function CheckIn() {
     mutation: {
       onSuccess: (data) => {
         toast({
-          title: data.status === "scheduled" ? t("Future Visit Scheduled") : t("Visitor Checked In"),
+          title: data.status === "scheduled"
+            ? t("Future Visit Scheduled")
+            : data.status === "pending"
+              ? t("Awaiting Admin Approval")
+              : t("Visitor Checked In"),
           description: t("Visitor ID: ") + data.visitorId,
         });
         setLocation(`/visitor-record/${data.id}`);
@@ -163,6 +144,7 @@ export default function CheckIn() {
   const reuseVisitorDetails = (match: NonNullable<typeof repeatVisitors>[number]) => {
     form.setValue("name", match.name, { shouldDirty: true, shouldValidate: true });
     form.setValue("email", match.email ?? "", { shouldDirty: true, shouldValidate: true });
+    form.setValue("idCardNumber", "", { shouldDirty: true, shouldValidate: true });
     form.setValue("personToMeet", match.personToMeet, { shouldDirty: true, shouldValidate: true });
     form.setValue("idProofType", match.idProofType, { shouldDirty: true, shouldValidate: true });
     form.setValue("idNumber", match.idNumber, { shouldDirty: true, shouldValidate: true });
@@ -216,11 +198,27 @@ export default function CheckIn() {
           try {
             const scannedUrl = new URL(result.getText(), window.location.origin);
             const visitorRoute = scannedUrl.pathname.match(/\/visitor\/([^/]+)\/?$/);
-            if (scannedUrl.origin !== window.location.origin || !visitorRoute) {
+            const appointmentPassRoute = scannedUrl.pathname.match(/\/appointment-pass\/([^/]+)\/?$/);
+            if (scannedUrl.origin !== window.location.origin) {
               setQrScanError(t("This QR code is not a visitor pass for this system."));
               return;
             }
 
+            if (appointmentPassRoute) {
+              void verifyAppointmentPass(appointmentPassRoute[1])
+                .then(({ visitor }) => {
+                  setQrScanOpen(false);
+                  setLocation(`/visitor-record/${encodeURIComponent(visitor.id)}`);
+                })
+                .catch((error: unknown) => {
+                  setQrScanError(error instanceof Error ? t(error.message) : t("Unable to verify appointment pass."));
+                });
+              return;
+            }
+            if (!visitorRoute) {
+              setQrScanError(t("This QR code is not a visitor pass for this system."));
+              return;
+            }
             setQrScanOpen(false);
             setLocation(`/visitor-record/${encodeURIComponent(visitorRoute[1])}`);
           } catch {
@@ -327,6 +325,20 @@ export default function CheckIn() {
   };
 
   const onSubmit = (data: CheckInForm) => {
+    if (!preRegister && !data.idCardNumber?.trim()) {
+      form.setError("idCardNumber", { type: "manual", message: t("ID card number is required") });
+      return;
+    }
+
+    if (isReadOnly || visitorLimitReached) {
+      toast({
+        title: t(isReadOnly ? "Subscription is read-only" : "Monthly visitor limit reached"),
+        description: t(isReadOnly ? "Choose a plan to restore editing." : "Choose a higher plan to register more visitors."),
+        variant: "destructive",
+      });
+      return;
+    }
+
     if (preRegister && !scheduledFor) {
       toast({ title: t("Visit date required"), description: t("Select the expected visit date."), variant: "destructive" });
       return;
@@ -375,7 +387,13 @@ export default function CheckIn() {
           </div>
           <div>
             <h1 className="text-lg font-bold tracking-tight text-foreground sm:text-xl">{preRegister ? t("Pre-register Future Visitor") : t("New Visitor Registration")}</h1>
-            <p className="mt-0.5 text-xs text-muted-foreground sm:text-sm">{preRegister ? t("Save visitor details now and check them in when they arrive.") : t("Capture visitor details and check them in.")}</p>
+            <p className="mt-0.5 text-xs text-muted-foreground sm:text-sm">
+              {preRegister
+                ? t("Save visitor details now and check them in when they arrive.")
+                : systemSettings?.requireApproval
+                  ? t("Visitors will wait for administrator approval after registration.")
+                  : t("Capture visitor details and check them in.")}
+            </p>
           </div>
         </div>
         <motion.img
@@ -489,6 +507,15 @@ export default function CheckIn() {
                   <FormItem className="w-full max-w-[280px] space-y-1">
                     <FormLabel className="text-[13px] leading-4">{t("Email Address (Optional)")}</FormLabel>
                     <FormControl><Input {...field} className="h-9 bg-background text-sm border-border" placeholder="john@example.com" /></FormControl>
+                    <FormMessage />
+                  </FormItem>
+                )} />
+                <FormField control={form.control} name="idCardNumber" render={({ field }) => (
+                  <FormItem className="w-full max-w-[280px] space-y-1">
+                    <FormLabel className="text-[13px] leading-4">
+                      {t("ID Card Number")}{!preRegister && <span className="ml-1 text-destructive">*</span>}
+                    </FormLabel>
+                    <FormControl><Input {...field} aria-required={!preRegister} className="h-9 bg-background text-sm border-border" placeholder={t("Enter issued ID card number")} /></FormControl>
                     <FormMessage />
                   </FormItem>
                 )} />
@@ -669,7 +696,7 @@ export default function CheckIn() {
                   <Button type="button" size="sm" variant="outline" className="h-9 flex-1 border-primary/25" onClick={() => fileInputRef.current?.click()}>
                     <Upload className="mr-2 h-4 w-4" />{t("Upload Photo")}
                   </Button>
-                  <Button
+                  {canScanPass && <Button
                     type="button"
                     size="sm"
                     variant="outline"
@@ -680,7 +707,7 @@ export default function CheckIn() {
                     }}
                   >
                     <QrCode className="mr-2 h-4 w-4" />{t("Scan Pass")}
-                  </Button>
+                  </Button>}
                   {(capturedPhoto || previewPhoto) && (
                     <Button type="button" size="sm" variant="ghost" onClick={clearPhoto}>{t("Remove")}</Button>
                   )}
@@ -698,7 +725,7 @@ export default function CheckIn() {
               </CardContent>
             </Card>
 
-            <Button type="submit" className="h-10 w-full text-sm font-semibold tracking-wide" disabled={createVisitorMutation.isPending}>
+            <Button type="submit" className="h-10 w-full text-sm font-semibold tracking-wide" disabled={createVisitorMutation.isPending || isReadOnly || visitorLimitReached}>
               {createVisitorMutation.isPending
                 ? t("REGISTERING...")
                 : preRegister

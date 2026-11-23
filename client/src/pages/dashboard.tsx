@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import { 
   useGetDashboardStats, 
+  useGetSubscription,
   useGetRecentVisitors, 
   useGetActivityFeed,
   useGetVisitors,
@@ -11,13 +12,14 @@ import {
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Activity, Clock, LogIn, Users, CheckCircle2, UserCheck, ShieldAlert, Printer, Search, X } from "lucide-react";
+import { Activity, Clock, LogIn, Users, CheckCircle2, UserCheck, ShieldAlert, Printer, Search, X, ClipboardCheck } from "lucide-react";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Input } from "@/components/ui/input";
-import { Link } from "wouter";
+import { Link, useLocation } from "wouter";
 import { motion, useReducedMotion } from "framer-motion";
 import { useLanguage } from "@/contexts/LanguageContext";
+import { useAuth } from "@/contexts/AuthContext";
 
 function escapeHtml(value: string) {
   return value.replace(/[&<>"']/g, (character) => ({
@@ -32,7 +34,12 @@ function escapeHtml(value: string) {
 export default function Dashboard() {
   const reduceMotion = useReducedMotion();
   const { t, formatDate } = useLanguage();
+  const { user } = useAuth();
+  const [, setLocation] = useLocation();
   const [manifestSearch, setManifestSearch] = useState("");
+  const { data: subscription } = useGetSubscription({
+    query: { enabled: user?.role === "admin" },
+  });
   const { data: stats, isLoading: statsLoading } = useGetDashboardStats({
     query: { queryKey: getGetDashboardStatsQueryKey() }
   });
@@ -50,6 +57,8 @@ export default function Dashboard() {
     isLoading: insideVisitorsLoading,
     refetch: refetchVisitorsInside,
   } = useGetVisitors({ status: "checked_in" });
+  const canReconcile = user?.role === "admin" &&
+    !!subscription?.plan.liveFeatures.includes("reconciliationStatement");
 
   const filteredRecentVisitors = useMemo(() => {
     const query = manifestSearch.trim().toLocaleLowerCase();
@@ -122,6 +131,7 @@ export default function Dashboard() {
       case "checked_out": return "bg-green-500/20 text-green-400 border-green-500/30";
       case "pending": return "bg-yellow-500/20 text-yellow-400 border-yellow-500/30";
       case "rejected": return "bg-red-500/20 text-red-400 border-red-500/30";
+      case "cancelled": return "bg-red-500/20 text-red-400 border-red-500/30";
       case "approved": return "bg-purple-500/20 text-purple-400 border-purple-500/30";
       case "scheduled": return "bg-amber-500/20 text-amber-500 border-amber-500/30";
       default: return "bg-gray-500/20 text-gray-400 border-gray-500/30";
@@ -252,10 +262,18 @@ export default function Dashboard() {
               {t("Print the current list of visitors on the premises")}
             </p>
           </div>
-          <Button onClick={printEmergencyRollCall} disabled={insideVisitorsLoading || insideVisitorsFetching}>
-            <Printer className="mr-2 h-4 w-4" />
-            {insideVisitorsLoading || insideVisitorsFetching ? t("Loading visitors...") : t("Print Roll Call")}
-          </Button>
+          <div className="flex flex-col gap-2 sm:flex-row">
+            {canReconcile && (
+              <Button variant="outline" onClick={() => setLocation("/reconciliation")}>
+                <ClipboardCheck className="mr-2 h-4 w-4" />
+                {t("Daily Reconciliation")}
+              </Button>
+            )}
+            <Button onClick={printEmergencyRollCall} disabled={insideVisitorsLoading || insideVisitorsFetching}>
+              <Printer className="mr-2 h-4 w-4" />
+              {insideVisitorsLoading || insideVisitorsFetching ? t("Loading visitors...") : t("Print Roll Call")}
+            </Button>
+          </div>
         </CardContent>
       </Card>
 

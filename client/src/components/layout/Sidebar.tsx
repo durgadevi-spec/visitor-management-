@@ -1,29 +1,39 @@
-import { ShieldAlert, ShieldCheck, LogOut, LayoutDashboard, Users, UserPlus, FileBarChart, Bell, Settings, Shield } from "lucide-react";
+import { ShieldAlert, ShieldCheck, LogOut, LayoutDashboard, Users, UserPlus, FileBarChart, Bell, Settings, Shield, CreditCard, Building2, CalendarCheck } from "lucide-react";
 import { Link, useLocation } from "wouter";
 import { useAuth } from "@/contexts/AuthContext";
 import { cn } from "@/lib/utils";
-import { useGetNotifications } from "@/lib/api-client";
+import { useGetNotifications, useGetSubscription } from "@/lib/api-client";
 import { useLanguage } from "@/contexts/LanguageContext";
 
 export function Sidebar() {
   const [location] = useLocation();
   const { user, logout } = useAuth();
   const { t } = useLanguage();
-  const { data: notifications } = useGetNotifications();
+  const { data: subscription } = useGetSubscription({
+    query: { enabled: !!user && user.role !== "superadmin" },
+  });
+  const { data: notifications } = useGetNotifications({
+    query: { enabled: user?.role !== "superadmin" },
+  });
   const unreadCount = notifications?.filter((notification) => !notification.readStatus).length ?? 0;
 
   const navigation = [
     { name: "Dashboard", label: t("Dashboard"), href: "/", icon: LayoutDashboard, roles: ["admin", "security", "employee"] },
     { name: "Check-in", label: t("Check-in"), href: "/check-in", icon: UserPlus, roles: ["admin", "security"] },
+    { name: "Appointments", label: t("Appointments"), href: "/appointments", icon: CalendarCheck, roles: ["admin"] },
     { name: "Visitors", label: t("Visitors"), href: "/visitors", icon: Users, roles: ["admin", "security", "employee"] },
     { name: "Reports", label: t("Reports"), href: "/reports", icon: FileBarChart, roles: ["admin", "security"] },
     { name: "Blacklist", label: t("Blacklist"), href: "/blacklist", icon: ShieldAlert, roles: ["admin", "security"] },
     { name: "Users", label: t("Users"), href: "/users", icon: Shield, roles: ["admin"] },
     { name: "Notifications", label: t("Notifications"), href: "/notifications", icon: Bell, roles: ["admin", "security", "employee"] },
     { name: "Settings", label: t("Settings"), href: "/settings", icon: Settings, roles: ["admin"] },
+    { name: "Billing", label: t("Billing"), href: "/billing", icon: CreditCard, roles: ["admin"] },
+    { name: "Organizations", label: t("Organizations"), href: "/superadmin", icon: Building2, roles: ["superadmin"] },
   ];
 
-  const allowedNav = navigation.filter(item => user && item.roles.includes(user.role));
+  const allowedNav = navigation.filter(item => user &&
+    item.roles.includes(user.role) &&
+    (item.name !== "Appointments" || subscription?.plan.liveFeatures.includes("appointments")));
 
   return (
     <aside className="flex h-full min-h-0 w-52 shrink-0 flex-col overflow-hidden border-r border-sidebar-border bg-sidebar text-sidebar-foreground">
@@ -75,7 +85,15 @@ export function Sidebar() {
           <div className="flex-1 overflow-hidden">
             <div className="truncate text-sm font-medium text-foreground">{user?.name}</div>
             <div className="truncate text-xs text-muted-foreground capitalize">
-              {user?.role ? t(user.role === "admin" ? "Administrator" : user.role === "security" ? "Security Officer" : "Employee / Host") : ""}
+              {user?.role ? t(
+                user.role === "superadmin"
+                  ? "Super Admin"
+                  : user.role === "admin"
+                    ? "Administrator"
+                    : user.role === "security"
+                      ? "Security Officer"
+                      : "Employee / Host",
+              ) : ""}
             </div>
           </div>
           <button

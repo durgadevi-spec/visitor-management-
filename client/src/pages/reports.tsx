@@ -18,6 +18,8 @@ import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { useLanguage } from "@/contexts/LanguageContext";
+import { useGetSubscription } from "@/lib/api-client";
+import { Link } from "wouter";
 
 type SortField = "createdAt" | "name" | "status" | "personToMeet" | "purpose";
 
@@ -202,6 +204,9 @@ function downloadVisitorPdf(visitors: Visitor[], gadgetsByVisitor: Map<string, V
 
 export default function Reports() {
   const { t, language } = useLanguage();
+  const { data: subscription } = useGetSubscription();
+  const canDownloadPdf = subscription?.plan.liveFeatures.includes("pdfReports") ?? false;
+  const canViewGadgets = subscription?.plan.liveFeatures.includes("gadgets") ?? false;
   const [period, setPeriod] = useState<"daily" | "weekly" | "monthly">("daily");
   const [startDate, setStartDate] = useState("");
   const [endDate, setEndDate] = useState("");
@@ -223,19 +228,22 @@ export default function Reports() {
     data: allGadgets,
     isLoading: gadgetsLoading,
     isError: gadgetsError,
-  } = useGetAllVisitorGadgets();
+  } = useGetAllVisitorGadgets({
+    query: { enabled: canViewGadgets },
+  });
 
   const COLORS = ['#00d1ff', '#22c55e', '#eab308', '#ef4444', '#a855f7'];
 
   const gadgetsByVisitor = useMemo(() => {
     const grouped = new Map<string, VisitorGadget[]>();
+    if (!canViewGadgets) return grouped;
     for (const gadget of allGadgets ?? []) {
       const current = grouped.get(gadget.visitorId) ?? [];
       current.push(gadget);
       grouped.set(gadget.visitorId, current);
     }
     return grouped;
-  }, [allGadgets]);
+  }, [allGadgets, canViewGadgets]);
 
   const filteredVisitors = useMemo(() => {
     const normalizedSearch = search.trim().toLowerCase();
@@ -334,22 +342,26 @@ export default function Reports() {
           >
             <Download className="h-4 w-4" /> {t("Excel (CSV)")}
           </Button>
-          <Button
-            type="button"
-            variant="outline"
-            onClick={() => downloadVisitorPdf(
-              filteredVisitors,
-              gadgetsByVisitor,
-              period,
-              startDate,
-              endDate,
-              language === "ta" ? (text) => text : t,
-              language === "ta" ? "en" : language,
-            )}
-            disabled={visitorsLoading || gadgetsLoading || gadgetsError}
-          >
-            <FileText className="h-4 w-4" /> {t("Download PDF")}
-          </Button>
+          {canDownloadPdf ? (
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => downloadVisitorPdf(
+                filteredVisitors,
+                gadgetsByVisitor,
+                period,
+                startDate,
+                endDate,
+                language === "ta" ? (text) => text : t,
+                language === "ta" ? "en" : language,
+              )}
+              disabled={visitorsLoading || (canViewGadgets && (gadgetsLoading || gadgetsError))}
+            >
+              <FileText className="h-4 w-4" /> {t("Download PDF")}
+            </Button>
+          ) : (
+            <Button type="button" variant="outline" asChild><Link href="/billing">{t("PDF reports: Business plan")}</Link></Button>
+          )}
           <div className="w-48">
             <Select value={period} onValueChange={(value) => setPeriod(value as typeof period)}>
               <SelectTrigger className="bg-card border-border">

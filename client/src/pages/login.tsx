@@ -24,6 +24,7 @@ export default function Login() {
       : "login"
   );
   const [name, setName] = useState("");
+  const [organizationName, setOrganizationName] = useState("");
   const [email, setEmail] = useState(() =>
     typeof window === "undefined" ? "" : window.localStorage.getItem(REMEMBERED_EMAIL_KEY) ?? ""
   );
@@ -103,7 +104,15 @@ export default function Login() {
         toast({ variant: "destructive", title: t("Passwords do not match"), description: t("Confirm your password and try again.") });
         return;
       }
-      signupMutation.mutate({ data: { name, email, password }, rememberMe });
+      signupMutation.mutate({
+        data: {
+          name,
+          ...(organizationName.trim() ? { organizationName: organizationName.trim() } : {}),
+          email,
+          password,
+        },
+        rememberMe,
+      });
       return;
     }
 
@@ -133,7 +142,7 @@ export default function Login() {
             {mode === "login" ? t("Welcome back!") : t("Create your account")}
           </h1>
           <p className="text-sm text-[#78877b] dark:text-muted-foreground">
-            {mode === "login" ? t("Sign in to your account") : t("Create an employee account")}
+            {mode === "login" ? t("Sign in to your account") : t("Create an organization admin account")}
           </p>
         </div>
 
@@ -143,21 +152,40 @@ export default function Login() {
               initial={reduceMotion ? false : { opacity: 0, y: 10 }}
               animate={reduceMotion ? undefined : { opacity: 1, y: 0 }}
               transition={{ duration: 0.3 }}
-              className="space-y-2"
+              className="space-y-4"
             >
-              <label htmlFor="signup-name" className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
-                {t("Full Name")}
-              </label>
-              <Input
-                id="signup-name"
-                autoComplete="name"
-                value={name}
-                onChange={(event) => setName(event.target.value)}
-                placeholder={t("Your name")}
-                minLength={2}
-                required
-                className="border-border bg-background text-foreground focus-visible:ring-primary"
-              />
+              <div className="space-y-2">
+                <label htmlFor="signup-name" className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
+                  {t("Full Name")}
+                </label>
+                <Input
+                  id="signup-name"
+                  autoComplete="name"
+                  value={name}
+                  onChange={(event) => setName(event.target.value)}
+                  placeholder={t("Your name")}
+                  minLength={2}
+                  required
+                  className="border-border bg-background text-foreground focus-visible:ring-primary"
+                />
+              </div>
+              <div className="space-y-2">
+                <label htmlFor="signup-organization" className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
+                  {t("Organization name")}
+                </label>
+                <Input
+                  id="signup-organization"
+                  autoComplete="organization"
+                  value={organizationName}
+                  onChange={(event) => setOrganizationName(event.target.value)}
+                  placeholder={t("Your company or facility")}
+                  minLength={2}
+                  className="border-border bg-background text-foreground focus-visible:ring-primary"
+                />
+              </div>
+              <p className="rounded-lg bg-[#edf2eb] px-3 py-2 text-xs leading-5 text-[#58755c]">
+                {t("Start a 14-day Business plan trial. No payment is collected during signup.")}
+              </p>
             </motion.div>
           )}
 

@@ -1,16 +1,24 @@
-import type { Express, Request } from "express";
+import type { Express, Request, Response, NextFunction } from "express";
 import type { Server } from "http";
-import { eq, and, or, ilike, gte, lte, desc, inArray } from "drizzle-orm";
+import { eq, and, or, ilike, gte, lte, lt, desc, inArray, count, sql, isNotNull, isNull } from "drizzle-orm";
 import { db } from "./db";
-import { authMiddleware, hashPassword, signToken, type JwtPayload } from "./auth";
+import { z } from "zod/v4";
+import { authMiddleware, hashPassword, signToken, verifyPassword, type AuthenticatedRequest } from "./auth";
 import {
+  organizationsTable,
   usersTable,
   visitorsTable,
   blacklistTable,
   notificationsTable,
   systemSettingsTable,
+  subscriptionsTable,
+  subscriptionInvoicesTable,
+  subscriptionPlanRequestsTable,
+  subscriptionUsageAlertsTable,
   visitorAuditTable,
   visitorGadgetsTable,
+  appointmentsTable,
+  appointmentAuditTable,
   LoginBody,
   SignupBody,
   CreateVisitorBody,
@@ -18,6 +26,8 @@ import {
   GetVisitorsQueryParams,
   LookupVisitorByMobileQueryParams,
   ApproveVisitorBody,
+  CheckinVisitorBody,
+  ManualCheckoutBody,
   GetReportsQueryParams,
   CreateUserBody,
   UpdateUserBody,
@@ -27,8 +37,128 @@ import {
   ReviewVisitorGadgetBody,
 } from "../shared/schema.ts";
 import { getSystemSettings } from "./settings";
+import { registerAppointmentRoutes } from "./appointment-routes";
+import { PLANS, isPlanId, planHasFeature, type BillingCycle, type PlanId, type LiveFeatureKey } from "../shared/plans";
+import { distanceInMeters } from "../shared/location";
 
-type AuthedRequest = Request & { user: JwtPayload };
+const publicVisitorLocationBody = z.discriminatedUnion("action", [
+  z.object({
+    action: z.literal("update"),
+    latitude: z.number().min(-90).max(90),
+    longitude: z.number().min(-180).max(180),
+    accuracyMeters: z.number().min(0).max(10_000),
+  }),
+  z.object({ action: z.literal("stop") }),
+]);
+
+type AuthedRequest = AuthenticatedRequest;
+
+function requireOrganization(req: Request, res: Response, next: NextFunction): void {
+  if (!(req as AuthedRequest).org) {
+    res.status(403).json({ error: "Organization access is required" });
+    return;
+  }
+  next();
+}
+
+function requireSuperAdmin(req: Request, res: Response, next: NextFunction): void {
+  if ((req as AuthedRequest).user.role !== "superadmin") {
+    res.status(403).json({ error: "Super-admin access is required" });
+    return;
+  }
+  next();
+}
+
+function organizationId(req: Request): number {
+  const organization = (req as AuthedRequest).org;
+  if (!organization) throw new Error("Tenant route was accessed without an organization context");
+  return organization.id;
+}
+
+function requireFeature(feature: LiveFeatureKey, req: Request, res: Response): boolean {
+  const organization = (req as AuthedRequest).org;
+  if (!organization || !planHasFeature(organization.planId, feature)) {
+    res.status(403).json({
+      error: `This feature is not included in your current plan.`,
+      code: "feature_not_in_plan",
+      feature,
+    });
+    return false;
+  }
+  return true;
+}
+
+async function checkVisitorCapacity(req: Request, res: Response, timezone: string): Promise<boolean> {
+  const orgId = organizationId(req);
+  const organization = (req as AuthedRequest).org!;
+  const limit = PLANS[organization.planId].limits.visitorsPerMonth;
+  if (limit === null) return true;
+
+  const [{ value: used }] = await db.select({ value: count() }).from(visitorsTable).where(and(
+    eq(visitorsTable.organizationId, orgId),
+    sql`date_trunc('month', ${visitorsTable.createdAt} AT TIME ZONE ${timezone}) =
+        date_trunc('month', now() AT TIME ZONE ${timezone})`,
+  ));
+  if (used >= limit) {
+    res.status(429).json({
+      error: "Your monthly visitor limit has been reached. Upgrade your plan to register more visitors.",
+      code: "visitor_limit_reached",
+      limit,
+      used,
+    });
+    return false;
+  }
+
+  if (used + 1 >= Math.ceil(limit * 0.8)) {
+    const monthParts = new Intl.DateTimeFormat("en-CA", {
+      timeZone: timezone,
+      year: "numeric",
+      month: "2-digit",
+    }).formatToParts(new Date());
+    const monthKey = `${monthParts.find((part) => part.type === "year")?.value}-${monthParts.find((part) => part.type === "month")?.value}`;
+    const [alert] = await db.insert(subscriptionUsageAlertsTable).values({
+      organizationId: orgId,
+      monthKey,
+      alertType: "visitor_80_percent",
+    }).onConflictDoNothing().returning({ id: subscriptionUsageAlertsTable.id });
+    if (alert) {
+      const admins = await db.select({ id: usersTable.id }).from(usersTable).where(and(
+        eq(usersTable.organizationId, orgId),
+        eq(usersTable.role, "admin"),
+      ));
+      if (admins.length > 0) {
+        await db.insert(notificationsTable).values(admins.map((admin) => ({
+          organizationId: orgId,
+          userId: admin.id,
+          message: `Your organization has used at least 80% of its ${limit} monthly visitor limit.`,
+          type: "warning",
+          readStatus: false,
+        })));
+      }
+    }
+  }
+  return true;
+}
+
+async function checkStaffCapacity(req: Request, res: Response): Promise<boolean> {
+  const orgId = organizationId(req);
+  const organization = (req as AuthedRequest).org!;
+  const limit = PLANS[organization.planId].limits.staffUsers;
+  if (limit === null) return true;
+
+  const [{ value: used }] = await db.select({ value: count() }).from(usersTable)
+    .where(eq(usersTable.organizationId, orgId));
+  if (used >= limit) {
+    res.status(429).json({
+      error: "Your staff-user limit has been reached. Upgrade your plan to add more users.",
+      code: "staff_limit_reached",
+      limit,
+      used,
+    });
+    return false;
+  }
+  return true;
+}
 
 function formatDuration(ms: number): string {
   const minutes = Math.floor(ms / 60000);
@@ -38,7 +168,19 @@ function formatDuration(ms: number): string {
   return `${mins}m`;
 }
 
-function formatVisitor(v: typeof visitorsTable.$inferSelect) {
+function dateInTimezone(date: Date, timezone: string): string {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: timezone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(date);
+  const values = Object.fromEntries(parts.map(({ type, value }) => [type, value]));
+  if (!values.year || !values.month || !values.day) throw new Error("Unable to determine local report date");
+  return `${values.year}-${values.month}-${values.day}`;
+}
+
+function formatVisitor(v: typeof visitorsTable.$inferSelect, includeCurrentLocation = false) {
   const duration =
     v.checkIn && v.checkOut
       ? formatDuration(new Date(v.checkOut).getTime() - new Date(v.checkIn).getTime())
@@ -55,6 +197,9 @@ function formatVisitor(v: typeof visitorsTable.$inferSelect) {
     checkOut: v.checkOut ? v.checkOut.toISOString() : null,
     duration,
     remarks: v.remarks ?? null,
+    currentLocationLatitude: includeCurrentLocation ? v.currentLocationLatitude : null,
+    currentLocationLongitude: includeCurrentLocation ? v.currentLocationLongitude : null,
+    currentLocationUpdatedAt: includeCurrentLocation ? v.currentLocationUpdatedAt?.toISOString() ?? null : null,
     createdAt: v.createdAt.toISOString(),
   };
 }
@@ -62,6 +207,7 @@ function formatVisitor(v: typeof visitorsTable.$inferSelect) {
 function formatUser(u: typeof usersTable.$inferSelect) {
   return {
     id: u.id,
+    organizationId: u.organizationId,
     name: u.name,
     email: u.email,
     role: u.role,
@@ -151,6 +297,13 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
     res.json({ status: "ok" });
   });
 
+  registerAppointmentRoutes(app, {
+    requireOrganization,
+    organizationId,
+    requireFeature,
+    checkVisitorCapacity,
+  });
+
   /* ----------------------------------- auth ----------------------------------- */
   app.post(`${api}/auth/signup`, async (req, res): Promise<void> => {
     const parsed = SignupBody.safeParse(req.body);
@@ -160,6 +313,7 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
     }
 
     const name = parsed.data.name;
+    const organizationName = parsed.data.organizationName?.trim() || `${name}'s organization`;
     const email = parsed.data.email.toLowerCase();
     const existing = await db.select({ id: usersTable.id }).from(usersTable).where(eq(usersTable.email, email));
     if (existing.length > 0) {
@@ -167,17 +321,46 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
       return;
     }
 
-    const [user] = await db
-      .insert(usersTable)
-      .values({
+    const slugBase = organizationName.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "organization";
+    const slug = `${slugBase}-${generateId().slice(0, 8)}`;
+    const now = new Date();
+    const trialEndsAt = new Date(now.getTime() + 14 * 24 * 60 * 60 * 1000);
+    const user = await db.transaction(async (tx) => {
+      const [organization] = await tx.insert(organizationsTable).values({
+        name: organizationName,
+        slug,
+        contactEmail: email,
+      }).returning();
+      const [createdUser] = await tx.insert(usersTable).values({
+        organizationId: organization.id,
         name,
         email,
-        role: "employee",
+        role: "admin",
         password: hashPassword(parsed.data.password),
-      })
-      .returning();
+      }).returning();
+      await tx.insert(subscriptionsTable).values({
+        organizationId: organization.id,
+        planId: "business",
+        status: "trial",
+        billingCycle: "annual",
+        trialEndsAt,
+        currentPeriodStart: now,
+        currentPeriodEnd: trialEndsAt,
+      });
+      await tx.insert(systemSettingsTable).values({
+        organizationId: organization.id,
+        facilityName: organizationName,
+        contactEmail: email,
+      });
+      return createdUser;
+    });
 
-    const token = signToken({ userId: user.id, email: user.email, role: user.role });
+    const token = signToken({
+      userId: user.id,
+      email: user.email,
+      role: user.role,
+      organizationId: user.organizationId,
+    });
     res.status(201).json({ token, user: formatUser(user) });
   });
 
@@ -188,7 +371,8 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
       return;
     }
 
-    const { email, password } = parsed.data;
+    const { password } = parsed.data;
+    const email = parsed.data.email.toLowerCase();
     const [user] = await db.select().from(usersTable).where(eq(usersTable.email, email));
 
     if (!user) {
@@ -196,13 +380,26 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
       return;
     }
 
-    const hashedPassword = hashPassword(password);
-    if (user.password !== hashedPassword && user.password !== password) {
+    const passwordVerification = verifyPassword(password, user.password);
+    if (!passwordVerification.valid) {
       res.status(401).json({ error: "Invalid credentials" });
       return;
     }
 
-    const token = signToken({ userId: user.id, email: user.email, role: user.role });
+    if (passwordVerification.needsUpgrade) {
+      const [upgradedUser] = await db.update(usersTable)
+        .set({ password: hashPassword(password) })
+        .where(eq(usersTable.id, user.id))
+        .returning();
+      user.password = upgradedUser.password;
+    }
+
+    const token = signToken({
+      userId: user.id,
+      email: user.email,
+      role: user.role,
+      organizationId: user.organizationId,
+    });
 
     res.json({ token, user: formatUser(user) });
   });
@@ -226,28 +423,119 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
       status: visitorsTable.status,
       scheduledFor: visitorsTable.scheduledFor,
       createdAt: visitorsTable.createdAt,
+      organizationId: visitorsTable.organizationId,
     }).from(visitorsTable).where(eq(visitorsTable.id, req.params.id));
     if (!visitor) {
       res.status(404).json({ error: "Visitor pass not found" });
       return;
     }
 
-    const settings = await getSystemSettings();
+    const settings = await getSystemSettings(visitor.organizationId);
+    const trackingAvailable = visitor.status === "checked_in" &&
+      settings.receptionLatitude !== null &&
+      settings.receptionLongitude !== null;
     res.json({
-      ...visitor,
+      visitorId: visitor.visitorId,
+      name: visitor.name,
+      personToMeet: visitor.personToMeet,
       photoUrl: visitor.photoUrl ?? null,
+      status: visitor.status,
+      scheduledFor: visitor.scheduledFor,
       createdAt: visitor.createdAt.toISOString(),
       facilityName: settings.facilityName,
       companyLogo: settings.companyLogo ?? null,
+      trackingAvailable,
+      receptionCoordinates: trackingAvailable
+        ? { latitude: settings.receptionLatitude!, longitude: settings.receptionLongitude! }
+        : null,
     });
   });
 
-  app.get(`${api}/settings`, authMiddleware, async (_req, res): Promise<void> => {
-    const settings = await getSystemSettings();
-    res.json(settings);
+  app.post(`${api}/public/visitor-pass/:id/location`, async (req, res): Promise<void> => {
+    const parsed = publicVisitorLocationBody.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: "Invalid visitor location update" });
+      return;
+    }
+
+    const [visitor] = await db.select({
+      id: visitorsTable.id,
+      organizationId: visitorsTable.organizationId,
+      status: visitorsTable.status,
+    }).from(visitorsTable).where(eq(visitorsTable.id, req.params.id));
+    if (!visitor) {
+      res.status(404).json({ error: "Visitor pass not found" });
+      return;
+    }
+    if (visitor.status !== "checked_in") {
+      res.status(409).json({ error: "Location sharing is available only while the visitor is checked in" });
+      return;
+    }
+
+    const clearCurrentLocation = async () => {
+      await db.update(visitorsTable).set({
+        currentLocationLatitude: null,
+        currentLocationLongitude: null,
+        currentLocationUpdatedAt: null,
+      }).where(and(
+        eq(visitorsTable.id, visitor.id),
+        eq(visitorsTable.organizationId, visitor.organizationId),
+        eq(visitorsTable.status, "checked_in"),
+      ));
+    };
+
+    if (parsed.data.action === "stop") {
+      await clearCurrentLocation();
+      res.json({ stored: false, reason: "stopped" });
+      return;
+    }
+
+    const settings = await getSystemSettings(visitor.organizationId);
+    if (settings.receptionLatitude === null || settings.receptionLongitude === null) {
+      res.status(409).json({ error: "Reception location is not configured" });
+      return;
+    }
+    if (parsed.data.accuracyMeters > 100) {
+      await clearCurrentLocation();
+      res.json({ stored: false, reason: "poor_accuracy" });
+      return;
+    }
+
+    const distance = distanceInMeters(
+      settings.receptionLatitude,
+      settings.receptionLongitude,
+      parsed.data.latitude,
+      parsed.data.longitude,
+    );
+    if (distance > 500) {
+      await clearCurrentLocation();
+      res.json({ stored: false, reason: "outside_geofence" });
+      return;
+    }
+
+    const [updated] = await db.update(visitorsTable).set({
+      currentLocationLatitude: parsed.data.latitude,
+      currentLocationLongitude: parsed.data.longitude,
+      currentLocationUpdatedAt: new Date(),
+    }).where(and(
+      eq(visitorsTable.id, visitor.id),
+      eq(visitorsTable.organizationId, visitor.organizationId),
+      eq(visitorsTable.status, "checked_in"),
+    )).returning({ id: visitorsTable.id });
+    if (!updated) {
+      res.status(409).json({ error: "Visitor is no longer checked in" });
+      return;
+    }
+    res.json({ stored: true });
   });
 
-  app.put(`${api}/settings`, authMiddleware, async (req, res): Promise<void> => {
+  app.get(`${api}/settings`, authMiddleware, requireOrganization, async (req, res): Promise<void> => {
+    const settings = await getSystemSettings(organizationId(req));
+    const approvalsAvailable = planHasFeature((req as AuthedRequest).org!.planId, "approvals");
+    res.json({ ...settings, requireApproval: settings.requireApproval && approvalsAvailable });
+  });
+
+  app.put(`${api}/settings`, authMiddleware, requireOrganization, async (req, res): Promise<void> => {
     const user = (req as AuthedRequest).user;
     if (user.role !== "admin") {
       res.status(403).json({ error: "Administrator access is required" });
@@ -267,20 +555,43 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
       return;
     }
 
-    const [settings] = await db
-      .insert(systemSettingsTable)
-      .values({ id: 1, ...parsed.data })
-      .onConflictDoUpdate({
-        target: systemSettingsTable.id,
-        set: parsed.data,
-      })
-      .returning();
+    if (parsed.data.requirePhoto && !requireFeature("mandatoryPhoto", req, res)) return;
+    if (parsed.data.requireApproval && !requireFeature("approvals", req, res)) return;
+
+    const orgId = organizationId(req);
+    const settings = await db.transaction(async (tx) => {
+      const [existing] = await tx.select({
+        receptionLatitude: systemSettingsTable.receptionLatitude,
+        receptionLongitude: systemSettingsTable.receptionLongitude,
+      }).from(systemSettingsTable).where(eq(systemSettingsTable.organizationId, orgId));
+      const [savedSettings] = await tx
+        .insert(systemSettingsTable)
+        .values({ organizationId: orgId, ...parsed.data })
+        .onConflictDoUpdate({
+          target: systemSettingsTable.organizationId,
+          set: parsed.data,
+        })
+        .returning();
+
+      if (existing && (
+        existing.receptionLatitude !== parsed.data.receptionLatitude ||
+        existing.receptionLongitude !== parsed.data.receptionLongitude
+      )) {
+        await tx.update(visitorsTable).set({
+          currentLocationLatitude: null,
+          currentLocationLongitude: null,
+          currentLocationUpdatedAt: null,
+        }).where(eq(visitorsTable.organizationId, orgId));
+      }
+
+      return savedSettings;
+    });
 
     res.json(settings);
   });
 
   /* --------------------------------- visitors --------------------------------- */
-  app.get(`${api}/visitors`, authMiddleware, async (req, res): Promise<void> => {
+  app.get(`${api}/visitors`, authMiddleware, requireOrganization, async (req, res): Promise<void> => {
     const params = GetVisitorsQueryParams.safeParse(req.query);
     if (!params.success) {
       res.status(400).json({ error: "Invalid query params" });
@@ -288,7 +599,7 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
     }
 
     const { status, date, search, person_to_meet } = params.data;
-    const conditions = [];
+    const conditions = [eq(visitorsTable.organizationId, organizationId(req))];
     if (status) conditions.push(eq(visitorsTable.status, status));
     if (date) {
       const start = new Date(date);
@@ -308,7 +619,8 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
     }
     if (person_to_meet) conditions.push(ilike(visitorsTable.personToMeet, `%${person_to_meet}%`));
 
-    const blacklistEntries = await db.select().from(blacklistTable);
+    const blacklistEntries = await db.select().from(blacklistTable)
+      .where(eq(blacklistTable.organizationId, organizationId(req)));
     const visitors = await db
       .select()
       .from(visitorsTable)
@@ -318,7 +630,7 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
     res.json(visitors.map((visitor) => formatVisitor(buildVisitorWithBlacklistFlag(visitor, blacklistEntries))));
   });
 
-  app.get(`${api}/visitors/lookup`, authMiddleware, async (req, res): Promise<void> => {
+  app.get(`${api}/visitors/lookup`, authMiddleware, requireOrganization, async (req, res): Promise<void> => {
     const parsed = LookupVisitorByMobileQueryParams.safeParse(req.query);
     if (!parsed.success) {
       res.status(400).json({ error: parsed.error.issues[0]?.message ?? "Invalid mobile number" });
@@ -336,7 +648,10 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
       createdAt: visitorsTable.createdAt,
     })
       .from(visitorsTable)
-      .where(eq(visitorsTable.mobile, parsed.data.mobile))
+      .where(and(
+        eq(visitorsTable.organizationId, organizationId(req)),
+        eq(visitorsTable.mobile, parsed.data.mobile),
+      ))
       .orderBy(desc(visitorsTable.createdAt))
       .limit(5);
 
@@ -347,7 +662,7 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
     })));
   });
 
-  app.post(`${api}/visitors`, authMiddleware, async (req, res): Promise<void> => {
+  app.post(`${api}/visitors`, authMiddleware, requireOrganization, async (req, res): Promise<void> => {
     const parsed = CreateVisitorBody.safeParse(req.body);
     if (!parsed.success) {
       res.status(400).json({ error: parsed.error.message });
@@ -356,13 +671,31 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
 
     const data = parsed.data;
     const user = (req as AuthedRequest).user;
+    const orgId = organizationId(req);
     const isScheduled = !!data.scheduledFor;
+    if (!isScheduled && !data.idCardNumber?.trim()) {
+      res.status(400).json({ error: "An ID card number is required for visitor check-in" });
+      return;
+    }
     if (isScheduled && user.role !== "admin") {
       res.status(403).json({ error: "Only administrators can schedule future visits" });
       return;
     }
 
-    const settings = await getSystemSettings();
+    const settings = await getSystemSettings(orgId);
+    const requireApproval = settings.requireApproval &&
+      planHasFeature((req as AuthedRequest).org!.planId, "approvals");
+    if (data.gadgets?.length && !requireFeature("gadgets", req, res)) return;
+    if (data.personToMeetId) {
+      const [host] = await db.select({ id: usersTable.id }).from(usersTable).where(and(
+        eq(usersTable.organizationId, orgId),
+        eq(usersTable.id, data.personToMeetId),
+      ));
+      if (!host) {
+        res.status(400).json({ error: "The selected host does not belong to this organization" });
+        return;
+      }
+    }
     if (settings.requirePhoto && !data.photoUrl) {
       res.status(400).json({ error: "A visitor photo is required by system settings" });
       return;
@@ -380,9 +713,11 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
       }
     }
 
+    if (!await checkVisitorCapacity(req, res, settings.timezone)) return;
     const id = generateId();
     const visitorId = generateVisitorId();
-    const blacklistEntries = await db.select().from(blacklistTable);
+    const blacklistEntries = await db.select().from(blacklistTable)
+      .where(eq(blacklistTable.organizationId, orgId));
     const blacklistMatch = findBlacklistMatchEntry(blacklistEntries, data.name, data.mobile);
     const isBlacklisted = !!blacklistMatch;
 
@@ -391,6 +726,7 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
         .insert(visitorsTable)
         .values({
           id,
+          organizationId: orgId,
           visitorId,
           name: data.name,
           mobile: data.mobile,
@@ -400,11 +736,12 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
           personToMeetId: data.personToMeetId ?? null,
           idProofType: data.idProofType,
           idNumber: data.idNumber,
+          idCardNumber: data.idCardNumber?.trim() ?? null,
           photoUrl: data.photoUrl ?? null,
           qrCode: visitorId,
           scheduledFor: data.scheduledFor ?? null,
-          status: isScheduled ? "scheduled" : "checked_in",
-          checkIn: isScheduled ? null : new Date(),
+          status: isScheduled ? "scheduled" : requireApproval ? "pending" : "checked_in",
+          checkIn: isScheduled || requireApproval ? null : new Date(),
           isBlacklisted,
           isFlagged: isBlacklisted,
           remarks: isBlacklisted ? `Security alert: matched blacklist reason "${blacklistMatch.reason}"` : null,
@@ -412,22 +749,44 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
         .returning();
 
       await tx.insert(visitorAuditTable).values({
+        organizationId: orgId,
         visitorId: id,
-        action: isScheduled ? "visit_scheduled" : "registered",
+        action: isScheduled ? "visit_scheduled" : requireApproval ? "approval_requested" : "registered",
         actorUserId: user.userId,
         actorEmail: user.email,
-        details: isScheduled
+        details: `${isScheduled
           ? `Future visit scheduled for ${data.scheduledFor}.`
-          : "Visitor registered and checked in.",
+          : requireApproval
+            ? "Visitor registered and is awaiting administrator approval."
+            : "Visitor registered and checked in."} ID card number: ${data.idCardNumber?.trim() ?? "Not assigned at pre-registration"}.`,
       });
+      if (requireApproval) {
+        const admins = await tx.select({ id: usersTable.id }).from(usersTable)
+          .where(and(
+            eq(usersTable.organizationId, orgId),
+            eq(usersTable.role, "admin"),
+          ));
+        if (admins.length > 0) {
+          await tx.insert(notificationsTable).values(admins.map((admin) => ({
+            organizationId: orgId,
+            userId: admin.id,
+            message: `${data.name} is awaiting administrator approval.`,
+            type: "warning",
+            readStatus: false,
+            visitorId: id,
+          })));
+        }
+      }
       if (data.gadgets?.length) {
         await tx.insert(visitorGadgetsTable).values(data.gadgets.map((gadget) => ({
+          organizationId: orgId,
           visitorId: id,
           name: gadget.name,
           makeModel: gadget.makeModel || null,
           serialNumber: gadget.serialNumber || null,
         })));
         await tx.insert(visitorAuditTable).values({
+          organizationId: orgId,
           visitorId: id,
           action: "gadgets_recorded",
           actorUserId: user.userId,
@@ -436,9 +795,13 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
         });
         if (!isScheduled) {
           const reviewers = await tx.select({ id: usersTable.id }).from(usersTable)
-            .where(or(eq(usersTable.role, "admin"), eq(usersTable.role, "security")));
+            .where(and(
+              eq(usersTable.organizationId, orgId),
+              or(eq(usersTable.role, "admin"), eq(usersTable.role, "security")),
+            ));
           if (reviewers.length > 0) {
             await tx.insert(notificationsTable).values(reviewers.map((reviewer) => ({
+              organizationId: orgId,
               userId: reviewer.id,
               message: `${data.gadgets!.length} gadget${data.gadgets!.length === 1 ? "" : "s"} carried by ${data.name} need approval.`,
               type: "warning",
@@ -452,8 +815,9 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
       return createdVisitor;
     });
 
-    if (data.personToMeetId && !isScheduled) {
+    if (data.personToMeetId && !isScheduled && !requireApproval) {
       await db.insert(notificationsTable).values({
+        organizationId: orgId,
         userId: data.personToMeetId,
         message: `${data.name} has arrived to meet you. Purpose: ${data.purpose}`,
         type: "info",
@@ -465,21 +829,35 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
     res.status(201).json(formatVisitor(visitor));
   });
 
-  app.get(`${api}/visitors/:id`, authMiddleware, async (req, res): Promise<void> => {
-    const [visitor] = await db.select().from(visitorsTable).where(eq(visitorsTable.id, req.params.id));
+  app.get(`${api}/visitors/:id`, authMiddleware, requireOrganization, async (req, res): Promise<void> => {
+    const [visitor] = await db.select().from(visitorsTable).where(and(
+      eq(visitorsTable.organizationId, organizationId(req)),
+      eq(visitorsTable.id, req.params.id),
+    ));
     if (!visitor) {
       res.status(404).json({ error: "Visitor not found" });
       return;
     }
-    const blacklistEntries = await db.select().from(blacklistTable);
-    res.json(formatVisitor(buildVisitorWithBlacklistFlag(visitor, blacklistEntries)));
+    const blacklistEntries = await db.select().from(blacklistTable)
+      .where(eq(blacklistTable.organizationId, organizationId(req)));
+    const role = (req as AuthedRequest).user.role;
+    res.json(formatVisitor(buildVisitorWithBlacklistFlag(visitor, blacklistEntries), role === "admin" || role === "security"));
   });
 
-  app.get(`${api}/visitors/:id/audit`, authMiddleware, async (req, res): Promise<void> => {
+  app.get(`${api}/visitors/:id/audit`, authMiddleware, requireOrganization, async (req, res): Promise<void> => {
+    const organization = (req as AuthedRequest).org!;
+    const retentionDays = PLANS[organization.planId].limits.auditRetentionDays;
+    const conditions = [
+      eq(visitorAuditTable.organizationId, organization.id),
+      eq(visitorAuditTable.visitorId, req.params.id),
+    ];
+    if (retentionDays !== null) {
+      conditions.push(gte(visitorAuditTable.createdAt, new Date(Date.now() - retentionDays * 24 * 60 * 60 * 1000)));
+    }
     const entries = await db
       .select()
       .from(visitorAuditTable)
-      .where(eq(visitorAuditTable.visitorId, req.params.id))
+      .where(and(...conditions))
       .orderBy(desc(visitorAuditTable.createdAt));
 
     res.json(entries.map((entry) => ({
@@ -488,14 +866,22 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
     })));
   });
 
-  app.get(`${api}/visitors/:id/gadgets`, authMiddleware, async (req, res): Promise<void> => {
-    const [visitor] = await db.select({ id: visitorsTable.id }).from(visitorsTable).where(eq(visitorsTable.id, req.params.id));
+  app.get(`${api}/visitors/:id/gadgets`, authMiddleware, requireOrganization, async (req, res): Promise<void> => {
+    if (!requireFeature("gadgets", req, res)) return;
+    const orgId = organizationId(req);
+    const [visitor] = await db.select({ id: visitorsTable.id }).from(visitorsTable).where(and(
+      eq(visitorsTable.organizationId, orgId),
+      eq(visitorsTable.id, req.params.id),
+    ));
     if (!visitor) {
       res.status(404).json({ error: "Visitor not found" });
       return;
     }
     const gadgets = await db.select().from(visitorGadgetsTable)
-      .where(eq(visitorGadgetsTable.visitorId, req.params.id))
+      .where(and(
+        eq(visitorGadgetsTable.organizationId, orgId),
+        eq(visitorGadgetsTable.visitorId, req.params.id),
+      ))
       .orderBy(visitorGadgetsTable.createdAt);
     res.json(gadgets.map((gadget) => ({
       ...gadget,
@@ -505,13 +891,15 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
     })));
   });
 
-  app.get(`${api}/gadgets`, authMiddleware, async (req, res): Promise<void> => {
+  app.get(`${api}/gadgets`, authMiddleware, requireOrganization, async (req, res): Promise<void> => {
     const user = (req as AuthedRequest).user;
+    if (!requireFeature("gadgets", req, res)) return;
     if (user.role !== "admin" && user.role !== "security") {
       res.status(403).json({ error: "Administrator or security access is required to export gadget details" });
       return;
     }
     const gadgets = await db.select().from(visitorGadgetsTable)
+      .where(eq(visitorGadgetsTable.organizationId, organizationId(req)))
       .orderBy(visitorGadgetsTable.createdAt);
     res.json(gadgets.map((gadget) => ({
       ...gadget,
@@ -521,8 +909,10 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
     })));
   });
 
-  app.put(`${api}/visitors/:id/gadgets/:gadgetId/approval`, authMiddleware, async (req, res): Promise<void> => {
+  app.put(`${api}/visitors/:id/gadgets/:gadgetId/approval`, authMiddleware, requireOrganization, async (req, res): Promise<void> => {
+    if (!requireFeature("gadgets", req, res)) return;
     const user = (req as AuthedRequest).user;
+    const orgId = organizationId(req);
     if (user.role !== "admin" && user.role !== "security") {
       res.status(403).json({ error: "Administrator or security access is required to review gadgets" });
       return;
@@ -535,10 +925,14 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
     }
     const [reviewed] = await db.transaction(async (tx) => {
       const [visitor] = await tx.select({ status: visitorsTable.status }).from(visitorsTable)
-        .where(eq(visitorsTable.id, req.params.id));
+        .where(and(
+          eq(visitorsTable.organizationId, orgId),
+          eq(visitorsTable.id, req.params.id),
+        ));
       if (!visitor || visitor.status !== "checked_in") return [null];
       const [gadget] = await tx.select().from(visitorGadgetsTable).where(and(
         eq(visitorGadgetsTable.id, gadgetId),
+        eq(visitorGadgetsTable.organizationId, orgId),
         eq(visitorGadgetsTable.visitorId, req.params.id),
       ));
       if (!gadget || gadget.approvalStatus !== "pending") return [null];
@@ -550,11 +944,14 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
         })
         .where(and(
           eq(visitorGadgetsTable.id, gadgetId),
+          eq(visitorGadgetsTable.organizationId, orgId),
+          eq(visitorGadgetsTable.visitorId, req.params.id),
           eq(visitorGadgetsTable.approvalStatus, "pending"),
         ))
         .returning();
       if (!updated) return [null];
       await tx.insert(visitorAuditTable).values({
+        organizationId: orgId,
         visitorId: req.params.id,
         action: parsed.data.action === "approve" ? "gadget_approved" : "gadget_rejected",
         actorUserId: user.userId,
@@ -575,8 +972,10 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
     });
   });
 
-  app.put(`${api}/visitors/:id/gadgets/:gadgetId/return`, authMiddleware, async (req, res): Promise<void> => {
+  app.put(`${api}/visitors/:id/gadgets/:gadgetId/return`, authMiddleware, requireOrganization, async (req, res): Promise<void> => {
+    if (!requireFeature("gadgets", req, res)) return;
     const user = (req as AuthedRequest).user;
+    const orgId = organizationId(req);
     if (user.role !== "admin" && user.role !== "security") {
       res.status(403).json({ error: "Administrator or security access is required to verify returned gadgets" });
       return;
@@ -588,10 +987,14 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
     }
     const [returned] = await db.transaction(async (tx) => {
       const [visitor] = await tx.select({ status: visitorsTable.status }).from(visitorsTable)
-        .where(eq(visitorsTable.id, req.params.id));
+        .where(and(
+          eq(visitorsTable.organizationId, orgId),
+          eq(visitorsTable.id, req.params.id),
+        ));
       if (!visitor || visitor.status !== "checked_in") return [null];
       const [gadget] = await tx.select().from(visitorGadgetsTable).where(and(
         eq(visitorGadgetsTable.id, gadgetId),
+        eq(visitorGadgetsTable.organizationId, orgId),
         eq(visitorGadgetsTable.visitorId, req.params.id),
       ));
       if (!gadget || gadget.approvalStatus !== "approved" || gadget.returnedAt) return [null];
@@ -599,11 +1002,14 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
         .set({ returnedAt: new Date() })
         .where(and(
           eq(visitorGadgetsTable.id, gadgetId),
+          eq(visitorGadgetsTable.organizationId, orgId),
+          eq(visitorGadgetsTable.visitorId, req.params.id),
           eq(visitorGadgetsTable.approvalStatus, "approved"),
         ))
         .returning();
       if (!updated) return [null];
       await tx.insert(visitorAuditTable).values({
+        organizationId: orgId,
         visitorId: req.params.id,
         action: "gadget_returned",
         actorUserId: user.userId,
@@ -624,7 +1030,7 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
     });
   });
 
-  app.put(`${api}/visitors/:id`, authMiddleware, async (req, res): Promise<void> => {
+  app.put(`${api}/visitors/:id`, authMiddleware, requireOrganization, async (req, res): Promise<void> => {
     const parsed = UpdateVisitorBody.safeParse(req.body);
     if (!parsed.success) {
       res.status(400).json({ error: parsed.error.message });
@@ -632,11 +1038,16 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
     }
 
     const data = parsed.data;
-    const blacklistEntries = await db.select().from(blacklistTable);
+    const orgId = organizationId(req);
+    const blacklistEntries = await db.select().from(blacklistTable)
+      .where(eq(blacklistTable.organizationId, orgId));
     const blacklistMatch = findBlacklistMatchEntry(blacklistEntries, data.name, data.mobile);
     const user = (req as AuthedRequest).user;
     const { updated, notFound } = await db.transaction(async (tx) => {
-      const [existing] = await tx.select().from(visitorsTable).where(eq(visitorsTable.id, req.params.id));
+      const [existing] = await tx.select().from(visitorsTable).where(and(
+        eq(visitorsTable.organizationId, orgId),
+        eq(visitorsTable.id, req.params.id),
+      ));
       if (!existing) return { updated: null, notFound: true };
 
       const changedFields = [
@@ -647,6 +1058,7 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
         ["person to meet", existing.personToMeet !== data.personToMeet],
         ["ID proof type", existing.idProofType !== data.idProofType],
         ["ID number", existing.idNumber !== data.idNumber],
+        ["ID card number", existing.idCardNumber !== (data.idCardNumber?.trim() || existing.idCardNumber)],
       ].filter(([, changed]) => changed).map(([field]) => field);
 
       const [updatedVisitor] = await tx
@@ -659,14 +1071,19 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
           personToMeet: data.personToMeet,
           idProofType: data.idProofType,
           idNumber: data.idNumber,
+          idCardNumber: data.idCardNumber?.trim() || existing.idCardNumber,
           isBlacklisted: !!blacklistMatch,
           isFlagged: !!blacklistMatch,
         })
-        .where(eq(visitorsTable.id, req.params.id))
+        .where(and(
+          eq(visitorsTable.organizationId, orgId),
+          eq(visitorsTable.id, req.params.id),
+        ))
         .returning();
 
       if (changedFields.length > 0) {
         await tx.insert(visitorAuditTable).values({
+          organizationId: orgId,
           visitorId: req.params.id,
           action: "edited",
           actorUserId: user.userId,
@@ -686,33 +1103,153 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
     res.json(formatVisitor(buildVisitorWithBlacklistFlag(updated, blacklistEntries)));
   });
 
-  app.put(`${api}/visitors/:id/checkout`, authMiddleware, async (req, res): Promise<void> => {
+  app.put(`${api}/visitors/:id/checkout-blocked`, authMiddleware, requireOrganization, async (req, res): Promise<void> => {
     const user = (req as AuthedRequest).user;
-    const { updated, gadgetsNotReturned } = await db.transaction(async (tx) => {
+    const orgId = organizationId(req);
+    const attemptedAt = new Date();
+    const result = await db.transaction(async (tx) => {
+      const [visitor] = await tx.select({
+        id: visitorsTable.id,
+        status: visitorsTable.status,
+        idCardNumber: visitorsTable.idCardNumber,
+      }).from(visitorsTable).where(and(
+        eq(visitorsTable.organizationId, orgId),
+        eq(visitorsTable.id, req.params.id),
+      ));
+      if (!visitor) return { updated: null, notFound: true, invalidStatus: false };
+      if (visitor.status !== "checked_in") return { updated: null, notFound: false, invalidStatus: true };
+
+      const [updated] = await tx.update(visitorsTable)
+        .set({ idCardReturned: false })
+        .where(and(
+          eq(visitorsTable.organizationId, orgId),
+          eq(visitorsTable.id, visitor.id),
+          eq(visitorsTable.status, "checked_in"),
+        ))
+        .returning();
+      if (!updated) return { updated: null, notFound: false, invalidStatus: true };
+
+      await tx.insert(visitorAuditTable).values({
+        organizationId: orgId,
+        visitorId: visitor.id,
+        action: "checkout_blocked",
+        actorUserId: user.userId,
+        actorEmail: user.email,
+        details: `Checkout blocked. ID card (Card No: ${visitor.idCardNumber || "Not recorded"}) returned: No.`,
+        createdAt: attemptedAt,
+      });
+      return { updated, notFound: false, invalidStatus: false };
+    });
+
+    if (result.notFound) {
+      res.status(404).json({ error: "Visitor not found" });
+      return;
+    }
+    if (result.invalidStatus || !result.updated) {
+      res.status(409).json({ error: "Only checked-in visitors can have a blocked checkout recorded" });
+      return;
+    }
+
+    res.json(formatVisitor(result.updated));
+  });
+
+  app.put(`${api}/visitors/:id/checkout`, authMiddleware, requireOrganization, async (req, res): Promise<void> => {
+    const parsed = ManualCheckoutBody.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: "Confirm that the visitor returned the issued ID card before checkout" });
+      return;
+    }
+
+    const user = (req as AuthedRequest).user;
+    const orgId = organizationId(req);
+    const checkedOutAt = new Date();
+    const { updated, gadgetsNotReturned, notFound, invalidStatus } = await db.transaction(async (tx) => {
+      const [visitor] = await tx.select({
+        id: visitorsTable.id,
+        status: visitorsTable.status,
+        appointmentId: visitorsTable.appointmentId,
+      }).from(visitorsTable).where(and(
+        eq(visitorsTable.organizationId, orgId),
+        eq(visitorsTable.id, req.params.id),
+      ));
+      if (!visitor) {
+        return { updated: null, gadgetsNotReturned: false, notFound: true, invalidStatus: false };
+      }
+      if (visitor.status !== "checked_in") {
+        return { updated: null, gadgetsNotReturned: false, notFound: false, invalidStatus: true };
+      }
+
       const approvedGadgets = await tx.select().from(visitorGadgetsTable).where(and(
+        eq(visitorGadgetsTable.organizationId, orgId),
         eq(visitorGadgetsTable.visitorId, req.params.id),
         eq(visitorGadgetsTable.approvalStatus, "approved"),
       ));
       if (approvedGadgets.some((gadget) => !gadget.returnedAt)) {
-        return { updated: null, gadgetsNotReturned: true };
+        return { updated: null, gadgetsNotReturned: true, notFound: false, invalidStatus: false };
       }
       const [checkedOut] = await tx
         .update(visitorsTable)
-        .set({ status: "checked_out", checkOut: new Date() })
-        .where(eq(visitorsTable.id, req.params.id))
+        .set({
+          status: "checked_out",
+          checkOut: checkedOutAt,
+          idCardReturned: true,
+          checkedOutBy: user.userId,
+          currentLocationLatitude: null,
+          currentLocationLongitude: null,
+          currentLocationUpdatedAt: null,
+        })
+        .where(and(
+          eq(visitorsTable.organizationId, orgId),
+          eq(visitorsTable.id, req.params.id),
+          eq(visitorsTable.status, "checked_in"),
+        ))
         .returning();
 
-      if (!checkedOut) return { updated: null, gadgetsNotReturned: false };
+      if (!checkedOut) {
+        return { updated: null, gadgetsNotReturned: false, notFound: false, invalidStatus: true };
+      }
       await tx.insert(visitorAuditTable).values({
+        organizationId: orgId,
         visitorId: checkedOut.id,
         action: "checked_out",
         actorUserId: user.userId,
         actorEmail: user.email,
-        details: "Visitor manually checked out.",
+        details: `Manual checkout confirmed. ID card (Card No: ${checkedOut.idCardNumber || "Not recorded"}) returned: Yes. Checked out by ${user.email}.`,
+        createdAt: checkedOutAt,
       });
-      return { updated: checkedOut, gadgetsNotReturned: false };
+      if (visitor.appointmentId) {
+        const [appointment] = await tx.update(appointmentsTable).set({
+          status: "completed",
+          completedAt: checkedOutAt,
+          updatedAt: checkedOutAt,
+        }).where(and(
+          eq(appointmentsTable.organizationId, orgId),
+          eq(appointmentsTable.id, visitor.appointmentId),
+          inArray(appointmentsTable.status, ["approved", "checked_in"]),
+        )).returning();
+        if (appointment) {
+          await tx.insert(appointmentAuditTable).values({
+            organizationId: orgId,
+            appointmentId: appointment.id,
+            action: "completed",
+            actorUserId: user.userId,
+            actorEmail: user.email,
+            details: `Visitor checked out for appointment ${appointment.appointmentNumber}.`,
+            createdAt: checkedOutAt,
+          });
+        }
+      }
+      return { updated: checkedOut, gadgetsNotReturned: false, notFound: false, invalidStatus: false };
     });
 
+    if (notFound) {
+      res.status(404).json({ error: "Visitor not found" });
+      return;
+    }
+    if (invalidStatus) {
+      res.status(409).json({ error: "Only checked-in visitors can be checked out" });
+      return;
+    }
     if (gadgetsNotReturned) {
       res.status(409).json({ error: "Verify that all approved gadgets have been returned before checking out this visitor" });
       return;
@@ -725,7 +1262,8 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
     res.json(formatVisitor(updated));
   });
 
-  app.put(`${api}/visitors/:id/approve`, authMiddleware, async (req, res): Promise<void> => {
+  app.put(`${api}/visitors/:id/approve`, authMiddleware, requireOrganization, async (req, res): Promise<void> => {
+    if (!requireFeature("approvals", req, res)) return;
     const parsed = ApproveVisitorBody.safeParse(req.body);
     if (!parsed.success) {
       res.status(400).json({ error: parsed.error.message });
@@ -733,7 +1271,12 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
     }
 
     const user = (req as AuthedRequest).user;
+    if (user.role !== "admin") {
+      res.status(403).json({ error: "Administrator access is required to approve or reject visitors" });
+      return;
+    }
     const newStatus = parsed.data.action === "approve" ? "approved" : "rejected";
+    const orgId = organizationId(req);
 
     const [updated] = await db
       .update(visitorsTable)
@@ -742,17 +1285,34 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
         remarks: parsed.data.remarks ?? null,
         approvedBy: user.userId,
       })
-      .where(eq(visitorsTable.id, req.params.id))
+      .where(and(
+        eq(visitorsTable.organizationId, orgId),
+        eq(visitorsTable.id, req.params.id),
+        inArray(visitorsTable.status, ["pending", "scheduled"]),
+      ))
       .returning();
 
     if (!updated) {
-      res.status(404).json({ error: "Visitor not found" });
+      res.status(409).json({ error: "Only pending or scheduled visitors can be approved or rejected" });
       return;
     }
 
-    const admins = await db.select().from(usersTable).where(eq(usersTable.role, "admin"));
+    await db.insert(visitorAuditTable).values({
+      organizationId: orgId,
+      visitorId: updated.id,
+      action: newStatus === "approved" ? "approved" : "rejected",
+      actorUserId: user.userId,
+      actorEmail: user.email,
+      details: `Visitor ${newStatus} by administrator.`,
+    });
+
+    const admins = await db.select().from(usersTable).where(and(
+      eq(usersTable.organizationId, organizationId(req)),
+      eq(usersTable.role, "admin"),
+    ));
     for (const admin of admins) {
       await db.insert(notificationsTable).values({
+        organizationId: organizationId(req),
         userId: admin.id,
         message: `Visitor ${updated.name} has been ${newStatus} by ${user.email}`,
         type: newStatus === "approved" ? "success" : "warning",
@@ -764,23 +1324,46 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
     res.json(formatVisitor(updated));
   });
 
-  app.put(`${api}/visitors/:id/checkin`, authMiddleware, async (req, res): Promise<void> => {
+  app.put(`${api}/visitors/:id/checkin`, authMiddleware, requireOrganization, async (req, res): Promise<void> => {
+    const parsed = CheckinVisitorBody.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      res.status(400).json({ error: parsed.error.message });
+      return;
+    }
+
     const user = (req as AuthedRequest).user;
+    const orgId = organizationId(req);
     const [existing] = await db.select({
       status: visitorsTable.status,
       photoUrl: visitorsTable.photoUrl,
       personToMeetId: visitorsTable.personToMeetId,
       name: visitorsTable.name,
-    }).from(visitorsTable).where(eq(visitorsTable.id, req.params.id));
+      idCardNumber: visitorsTable.idCardNumber,
+      appointmentId: visitorsTable.appointmentId,
+    }).from(visitorsTable).where(and(
+      eq(visitorsTable.organizationId, orgId),
+      eq(visitorsTable.id, req.params.id),
+    ));
     if (!existing) {
       res.status(404).json({ error: "Visitor not found" });
+      return;
+    }
+    const idCardNumber = existing.idCardNumber?.trim() || parsed.data.idCardNumber?.trim() || null;
+    if (!idCardNumber) {
+      res.status(400).json({ error: "An ID card number is required before check-in" });
       return;
     }
     if (!["scheduled", "pending", "approved"].includes(existing.status)) {
       res.status(409).json({ error: "Visitor cannot be checked in from the current status" });
       return;
     }
-    const settings = await getSystemSettings();
+    const settings = await getSystemSettings(orgId);
+    if (settings.requireApproval &&
+      planHasFeature((req as AuthedRequest).org!.planId, "approvals") &&
+      existing.status !== "approved") {
+      res.status(409).json({ error: "Administrator approval is required before check-in" });
+      return;
+    }
     if (settings.requirePhoto && !existing.photoUrl) {
       res.status(400).json({ error: "A visitor photo is required by system settings before check-in" });
       return;
@@ -789,8 +1372,9 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
     const updated = await db.transaction(async (tx) => {
       const [checkedIn] = await tx
         .update(visitorsTable)
-        .set({ status: "checked_in", checkIn: new Date() })
+        .set({ status: "checked_in", checkIn: new Date(), idCardNumber })
         .where(and(
+          eq(visitorsTable.organizationId, orgId),
           eq(visitorsTable.id, req.params.id),
           inArray(visitorsTable.status, ["scheduled", "pending", "approved"]),
         ))
@@ -798,12 +1382,33 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
 
       if (!checkedIn) return null;
       await tx.insert(visitorAuditTable).values({
+        organizationId: orgId,
         visitorId: checkedIn.id,
         action: "checked_in",
         actorUserId: user.userId,
         actorEmail: user.email,
-        details: "Visitor checked in.",
+        details: `Visitor checked in. ID card number: ${idCardNumber}.`,
       });
+      if (checkedIn.appointmentId) {
+        const [appointment] = await tx.update(appointmentsTable).set({
+          status: "checked_in",
+          updatedAt: new Date(),
+        }).where(and(
+          eq(appointmentsTable.organizationId, orgId),
+          eq(appointmentsTable.id, checkedIn.appointmentId),
+          eq(appointmentsTable.status, "approved"),
+        )).returning();
+        if (appointment) {
+          await tx.insert(appointmentAuditTable).values({
+            organizationId: orgId,
+            appointmentId: appointment.id,
+            action: "checked_in",
+            actorUserId: user.userId,
+            actorEmail: user.email,
+            details: `Visitor checked in for appointment ${appointment.appointmentNumber}.`,
+          });
+        }
+      }
       return checkedIn;
     });
     if (!updated) {
@@ -813,6 +1418,7 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
 
     if (existing.personToMeetId) {
       await db.insert(notificationsTable).values({
+        organizationId: orgId,
         userId: existing.personToMeetId,
         message: `${existing.name} has arrived. Please meet your visitor.`,
         type: "info",
@@ -825,13 +1431,18 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
       const pendingGadgets = await db.select({ id: visitorGadgetsTable.id }).from(visitorGadgetsTable)
         .where(and(
           eq(visitorGadgetsTable.visitorId, req.params.id),
+          eq(visitorGadgetsTable.organizationId, orgId),
           eq(visitorGadgetsTable.approvalStatus, "pending"),
         ));
       if (pendingGadgets.length > 0) {
         const reviewers = await db.select({ id: usersTable.id }).from(usersTable)
-          .where(or(eq(usersTable.role, "admin"), eq(usersTable.role, "security")));
+          .where(and(
+            eq(usersTable.organizationId, orgId),
+            or(eq(usersTable.role, "admin"), eq(usersTable.role, "security")),
+          ));
         if (reviewers.length > 0) {
           await db.insert(notificationsTable).values(reviewers.map((reviewer) => ({
+            organizationId: orgId,
             userId: reviewer.id,
             message: `${pendingGadgets.length} gadget${pendingGadgets.length === 1 ? "" : "s"} carried by ${existing.name} need approval.`,
             type: "warning",
@@ -845,27 +1456,43 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
   });
 
   /* --------------------------------- dashboard --------------------------------- */
-  app.get(`${api}/dashboard/stats`, authMiddleware, async (_req, res): Promise<void> => {
+  app.get(`${api}/dashboard/stats`, authMiddleware, requireOrganization, async (req, res): Promise<void> => {
+    const orgId = organizationId(req);
     const today = new Date();
     today.setHours(0, 0, 0, 0);
 
-    const todayVisitors = await db.select().from(visitorsTable).where(gte(visitorsTable.checkIn, today));
+    const todayVisitors = await db.select().from(visitorsTable).where(and(
+      eq(visitorsTable.organizationId, orgId),
+      gte(visitorsTable.checkIn, today),
+    ));
 
     const totalToday = todayVisitors.length;
     const visitorsInside = (await db.select({ id: visitorsTable.id }).from(visitorsTable)
-      .where(eq(visitorsTable.status, "checked_in"))).length;
+      .where(and(
+        eq(visitorsTable.organizationId, orgId),
+        eq(visitorsTable.status, "checked_in"),
+      ))).length;
     const checkedOut = todayVisitors.filter((v) => v.status === "checked_out").length;
     const pendingVisitors = await db.select({ id: visitorsTable.id }).from(visitorsTable)
-      .where(eq(visitorsTable.status, "pending"));
+      .where(and(
+        eq(visitorsTable.organizationId, orgId),
+        eq(visitorsTable.status, "pending"),
+      ));
     const pendingApprovals = pendingVisitors.length;
 
     const weekStart = new Date();
     weekStart.setDate(weekStart.getDate() - 7);
-    const weekVisitors = await db.select().from(visitorsTable).where(gte(visitorsTable.checkIn, weekStart));
+    const weekVisitors = await db.select().from(visitorsTable).where(and(
+      eq(visitorsTable.organizationId, orgId),
+      gte(visitorsTable.checkIn, weekStart),
+    ));
 
     const monthStart = new Date();
     monthStart.setDate(1);
-    const monthVisitors = await db.select().from(visitorsTable).where(gte(visitorsTable.checkIn, monthStart));
+    const monthVisitors = await db.select().from(visitorsTable).where(and(
+      eq(visitorsTable.organizationId, orgId),
+      gte(visitorsTable.checkIn, monthStart),
+    ));
 
     const hourCounts: Record<number, number> = {};
     for (const v of todayVisitors) {
@@ -902,13 +1529,158 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
     });
   });
 
-  app.get(`${api}/dashboard/recent`, authMiddleware, async (_req, res): Promise<void> => {
-    const visitors = await db.select().from(visitorsTable).orderBy(desc(visitorsTable.createdAt)).limit(10);
-    res.json(visitors.map(formatVisitor));
+  app.get(`${api}/reconciliation/daily`, authMiddleware, requireOrganization, async (req, res): Promise<void> => {
+    if (!requireFeature("reconciliationStatement", req, res)) return;
+    if ((req as AuthedRequest).user.role !== "admin") {
+      res.status(403).json({ error: "Administrator access is required for daily reconciliation" });
+      return;
+    }
+
+    const orgId = organizationId(req);
+    const settings = await getSystemSettings(orgId);
+    const suppliedDate = req.query.date;
+    if (suppliedDate !== undefined && typeof suppliedDate !== "string") {
+      res.status(400).json({ error: "Enter a valid reconciliation date" });
+      return;
+    }
+    const reportDate = typeof suppliedDate === "string" ? suppliedDate : dateInTimezone(new Date(), settings.timezone);
+    const parsedDate = new Date(`${reportDate}T00:00:00.000Z`);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(reportDate) ||
+      Number.isNaN(parsedDate.getTime()) ||
+      parsedDate.toISOString().slice(0, 10) !== reportDate) {
+      res.status(400).json({ error: "Enter a valid reconciliation date" });
+      return;
+    }
+    if (reportDate > dateInTimezone(new Date(), settings.timezone)) {
+      res.status(400).json({ error: "Reconciliation is only available for today or an earlier date" });
+      return;
+    }
+
+    const dayStart = sql`(${reportDate}::date::timestamp AT TIME ZONE ${settings.timezone})`;
+    const dayEnd = sql`((${reportDate}::date + 1)::timestamp AT TIME ZONE ${settings.timezone})`;
+    const [visitorRows, blockedRows] = await Promise.all([
+      db.select({
+        id: visitorsTable.id,
+        visitorId: visitorsTable.visitorId,
+        name: visitorsTable.name,
+        mobile: visitorsTable.mobile,
+        status: visitorsTable.status,
+        checkIn: visitorsTable.checkIn,
+        checkOut: visitorsTable.checkOut,
+        idCardNumber: visitorsTable.idCardNumber,
+        idCardReturned: visitorsTable.idCardReturned,
+        checkedOutBy: visitorsTable.checkedOutBy,
+        checkedOutByName: usersTable.name,
+        checkedOutByEmail: usersTable.email,
+      }).from(visitorsTable).leftJoin(usersTable, and(
+        eq(visitorsTable.checkedOutBy, usersTable.id),
+        eq(usersTable.organizationId, orgId),
+      )).where(and(
+        eq(visitorsTable.organizationId, orgId),
+        or(
+          and(gte(visitorsTable.checkIn, dayStart), lt(visitorsTable.checkIn, dayEnd)),
+          and(gte(visitorsTable.checkOut, dayStart), lt(visitorsTable.checkOut, dayEnd)),
+          and(
+            lt(visitorsTable.checkIn, dayEnd),
+            or(isNull(visitorsTable.checkOut), gte(visitorsTable.checkOut, dayEnd))!,
+          ),
+          and(
+            isNotNull(visitorsTable.idCardNumber),
+            lt(visitorsTable.checkIn, dayEnd),
+            or(
+              isNull(visitorsTable.checkOut),
+              gte(visitorsTable.checkOut, dayEnd),
+              and(
+                lt(visitorsTable.checkOut, dayEnd),
+                or(isNull(visitorsTable.idCardReturned), eq(visitorsTable.idCardReturned, false))!,
+              ),
+            )!,
+          ),
+        )!,
+      )),
+      db.select({
+        visitorId: visitorAuditTable.visitorId,
+        attempts: count(),
+      }).from(visitorAuditTable).where(and(
+        eq(visitorAuditTable.organizationId, orgId),
+        eq(visitorAuditTable.action, "checkout_blocked"),
+        gte(visitorAuditTable.createdAt, dayStart),
+        lt(visitorAuditTable.createdAt, dayEnd),
+      )).groupBy(visitorAuditTable.visitorId),
+    ]);
+
+    const isOnReportDate = (value: Date | null) =>
+      value !== null && dateInTimezone(value, settings.timezone) === reportDate;
+    const blockedAttemptsByVisitor = new Map(blockedRows.map((row) => [row.visitorId, row.attempts]));
+    const records = visitorRows.map((visitor) => {
+      const checkedInOnDate = isOnReportDate(visitor.checkIn);
+      const checkedOutOnDate = isOnReportDate(visitor.checkOut);
+      const checkedOutByReportDate = visitor.checkOut !== null &&
+        dateInTimezone(visitor.checkOut, settings.timezone) <= reportDate;
+      const insideAtEndOfDate = visitor.checkIn !== null &&
+        dateInTimezone(visitor.checkIn, settings.timezone) <= reportDate &&
+        (!visitor.checkOut || dateInTimezone(visitor.checkOut, settings.timezone) > reportDate);
+      const cardOutstanding = !!visitor.idCardNumber && visitor.checkIn !== null &&
+        dateInTimezone(visitor.checkIn, settings.timezone) <= reportDate &&
+        (!visitor.checkOut ||
+          dateInTimezone(visitor.checkOut, settings.timezone) > reportDate ||
+          visitor.idCardReturned !== true);
+      const cardStatus = !visitor.idCardNumber
+        ? "not_issued"
+        : checkedOutByReportDate
+          ? visitor.idCardReturned === true ? "returned" : visitor.idCardReturned === false ? "not_returned" : "unverified"
+          : visitor.idCardReturned === false ? "not_returned" : "inside";
+      return {
+        id: visitor.id,
+        visitorId: visitor.visitorId,
+        name: visitor.name,
+        mobile: visitor.mobile,
+        status: checkedOutByReportDate ? "checked_out" : "checked_in",
+        checkIn: visitor.checkIn?.toISOString() ?? null,
+        checkOut: visitor.checkOut?.toISOString() ?? null,
+        checkedInOnDate,
+        checkedOutOnDate,
+        insideAtEndOfDate,
+        idCardNumber: visitor.idCardNumber,
+        idCardReturned: visitor.idCardReturned,
+        cardStatus,
+        cardOutstanding,
+        checkedOutByName: visitor.checkedOutByName,
+        checkedOutByEmail: visitor.checkedOutByEmail,
+        blockedCheckoutAttempts: blockedAttemptsByVisitor.get(visitor.id) ?? 0,
+      };
+    });
+
+    const checkedOutToday = records.filter((visitor) => visitor.checkedOutOnDate);
+    res.json({
+      date: reportDate,
+      timezone: settings.timezone,
+      summary: {
+        checkIns: records.filter((visitor) => visitor.checkedInOnDate).length,
+        checkOuts: checkedOutToday.length,
+        manualCheckouts: checkedOutToday.filter((visitor) => visitor.checkedOutByEmail).length,
+        automaticCheckouts: checkedOutToday.filter((visitor) => !visitor.checkedOutByEmail).length,
+        visitorsInside: records.filter((visitor) => visitor.insideAtEndOfDate).length,
+        idCardsIssued: records.filter((visitor) => visitor.checkedInOnDate && visitor.idCardNumber).length,
+        idCardsReturned: records.filter((visitor) => visitor.checkedOutOnDate && visitor.idCardReturned === true).length,
+        idCardsOutstanding: records.filter((visitor) => visitor.cardOutstanding).length,
+        blockedCheckoutAttempts: blockedRows.reduce((total, row) => total + row.attempts, 0),
+      },
+      visitors: records,
+    });
   });
 
-  app.get(`${api}/dashboard/activity`, authMiddleware, async (_req, res): Promise<void> => {
-    const visitors = await db.select().from(visitorsTable).orderBy(desc(visitorsTable.createdAt)).limit(20);
+  app.get(`${api}/dashboard/recent`, authMiddleware, requireOrganization, async (req, res): Promise<void> => {
+    const visitors = await db.select().from(visitorsTable)
+      .where(eq(visitorsTable.organizationId, organizationId(req)))
+      .orderBy(desc(visitorsTable.createdAt)).limit(10);
+    res.json(visitors.map((visitor) => formatVisitor(visitor)));
+  });
+
+  app.get(`${api}/dashboard/activity`, authMiddleware, requireOrganization, async (req, res): Promise<void> => {
+    const visitors = await db.select().from(visitorsTable)
+      .where(eq(visitorsTable.organizationId, organizationId(req)))
+      .orderBy(desc(visitorsTable.createdAt)).limit(20);
 
     const activities = visitors
       .flatMap((v) => {
@@ -959,7 +1731,7 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
   });
 
   /* ---------------------------------- reports ---------------------------------- */
-  app.get(`${api}/reports`, authMiddleware, async (req, res): Promise<void> => {
+  app.get(`${api}/reports`, authMiddleware, requireOrganization, async (req, res): Promise<void> => {
     const params = GetReportsQueryParams.safeParse(req.query);
     const period = params.success ? (params.data.period ?? "daily") : "daily";
 
@@ -981,8 +1753,15 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
       days = 1;
     }
 
-    const visitors = await db.select().from(visitorsTable).where(gte(visitorsTable.createdAt, start));
-    const visitsInPeriod = await db.select().from(visitorsTable).where(gte(visitorsTable.checkIn, start));
+    const orgId = organizationId(req);
+    const visitors = await db.select().from(visitorsTable).where(and(
+      eq(visitorsTable.organizationId, orgId),
+      gte(visitorsTable.createdAt, start),
+    ));
+    const visitsInPeriod = await db.select().from(visitorsTable).where(and(
+      eq(visitorsTable.organizationId, orgId),
+      gte(visitorsTable.checkIn, start),
+    ));
 
     const totalVisitors = visitsInPeriod.length;
     const avgDailyVisitors = days > 1 ? totalVisitors / days : totalVisitors;
@@ -1052,19 +1831,27 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
   });
 
   /* ----------------------------------- users ----------------------------------- */
-  app.get(`${api}/users`, authMiddleware, async (_req, res): Promise<void> => {
-    const users = await db.select().from(usersTable);
+  app.get(`${api}/users`, authMiddleware, requireOrganization, async (req, res): Promise<void> => {
+    const users = await db.select().from(usersTable)
+      .where(eq(usersTable.organizationId, organizationId(req)));
     res.json(users.map(formatUser));
   });
 
-  app.post(`${api}/users`, authMiddleware, async (req, res): Promise<void> => {
+  app.post(`${api}/users`, authMiddleware, requireOrganization, async (req, res): Promise<void> => {
+    if ((req as AuthedRequest).user.role !== "admin") {
+      res.status(403).json({ error: "Only administrators can add employees" });
+      return;
+    }
+
     const parsed = CreateUserBody.safeParse(req.body);
     if (!parsed.success) {
       res.status(400).json({ error: parsed.error.message });
       return;
     }
 
-    const existing = await db.select().from(usersTable).where(eq(usersTable.email, parsed.data.email));
+    if (!await checkStaffCapacity(req, res)) return;
+    const orgId = organizationId(req);
+    const existing = await db.select().from(usersTable).where(eq(usersTable.email, parsed.data.email.toLowerCase()));
     if (existing.length > 0) {
       res.status(400).json({ error: "User with this email already exists" });
       return;
@@ -1073,8 +1860,9 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
     const [user] = await db
       .insert(usersTable)
       .values({
+        organizationId: orgId,
         name: parsed.data.name,
-        email: parsed.data.email,
+        email: parsed.data.email.toLowerCase(),
         role: parsed.data.role,
         password: hashPassword(parsed.data.password),
       })
@@ -1083,9 +1871,13 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
     res.status(201).json(formatUser(user));
   });
 
-  app.put(`${api}/users/:id`, authMiddleware, async (req, res): Promise<void> => {
+  app.put(`${api}/users/:id`, authMiddleware, requireOrganization, async (req, res): Promise<void> => {
     const requester = (req as AuthedRequest).user;
-    const [admin] = await db.select({ role: usersTable.role }).from(usersTable).where(eq(usersTable.id, requester.userId));
+    const orgId = organizationId(req);
+    const [admin] = await db.select({ role: usersTable.role }).from(usersTable).where(and(
+      eq(usersTable.organizationId, orgId),
+      eq(usersTable.id, requester.userId),
+    ));
     if (!admin || admin.role !== "admin") {
       res.status(403).json({ error: "Only administrators can edit employees" });
       return;
@@ -1103,7 +1895,10 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
       return;
     }
 
-    const [target] = await db.select().from(usersTable).where(eq(usersTable.id, id));
+    const [target] = await db.select().from(usersTable).where(and(
+      eq(usersTable.organizationId, orgId),
+      eq(usersTable.id, id),
+    ));
     if (!target) {
       res.status(404).json({ error: "User not found" });
       return;
@@ -1124,29 +1919,50 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
         role: parsed.data.role,
         ...(parsed.data.password ? { password: hashPassword(parsed.data.password) } : {}),
       })
-      .where(eq(usersTable.id, id))
+      .where(and(
+        eq(usersTable.organizationId, orgId),
+        eq(usersTable.id, id),
+      ))
       .returning();
 
+    if (!updated) {
+      res.status(404).json({ error: "User not found" });
+      return;
+    }
     res.json(formatUser(updated));
   });
 
-  app.delete(`${api}/users/:id`, authMiddleware, async (req, res): Promise<void> => {
+  app.delete(`${api}/users/:id`, authMiddleware, requireOrganization, async (req, res): Promise<void> => {
+    const user = (req as AuthedRequest).user;
+    if (user.role !== "admin") {
+      res.status(403).json({ error: "Only administrators can remove employees" });
+      return;
+    }
     const id = parseInt(req.params.id, 10);
     if (Number.isNaN(id)) {
       res.status(400).json({ error: "Invalid user ID" });
       return;
     }
-    await db.delete(usersTable).where(eq(usersTable.id, id));
+    const [deleted] = await db.delete(usersTable).where(and(
+      eq(usersTable.organizationId, organizationId(req)),
+      eq(usersTable.id, id),
+    )).returning({ id: usersTable.id });
+    if (!deleted) {
+      res.status(404).json({ error: "User not found" });
+      return;
+    }
     res.json({ success: true, message: "User deleted" });
   });
 
   /* --------------------------------- blacklist --------------------------------- */
-  app.get(`${api}/blacklist`, authMiddleware, async (_req, res): Promise<void> => {
-    const entries = await db.select().from(blacklistTable).orderBy(blacklistTable.createdAt);
+  app.get(`${api}/blacklist`, authMiddleware, requireOrganization, async (req, res): Promise<void> => {
+    const entries = await db.select().from(blacklistTable)
+      .where(eq(blacklistTable.organizationId, organizationId(req)))
+      .orderBy(blacklistTable.createdAt);
     res.json(entries.map(formatBlacklist).reverse());
   });
 
-  app.post(`${api}/blacklist`, authMiddleware, async (req, res): Promise<void> => {
+  app.post(`${api}/blacklist`, authMiddleware, requireOrganization, async (req, res): Promise<void> => {
     const parsed = AddToBlacklistBody.safeParse(req.body);
     if (!parsed.success) {
       res.status(400).json({ error: parsed.error.message });
@@ -1158,6 +1974,7 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
     const [entry] = await db
       .insert(blacklistTable)
       .values({
+        organizationId: organizationId(req),
         name: parsed.data.name,
         mobile: parsed.data.mobile,
         reason: parsed.data.reason,
@@ -1168,7 +1985,7 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
     res.status(201).json(formatBlacklist(entry));
   });
 
-  app.put(`${api}/blacklist/:id`, authMiddleware, async (req, res): Promise<void> => {
+  app.put(`${api}/blacklist/:id`, authMiddleware, requireOrganization, async (req, res): Promise<void> => {
     const id = parseInt(req.params.id, 10);
     if (Number.isNaN(id)) {
       res.status(400).json({ error: "Invalid ID" });
@@ -1188,7 +2005,10 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
         mobile: parsed.data.mobile,
         reason: parsed.data.reason,
       })
-      .where(eq(blacklistTable.id, id))
+      .where(and(
+        eq(blacklistTable.organizationId, organizationId(req)),
+        eq(blacklistTable.id, id),
+      ))
       .returning();
 
     if (!updated) {
@@ -1199,28 +2019,38 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
     res.json(formatBlacklist(updated));
   });
 
-  app.delete(`${api}/blacklist/:id`, authMiddleware, async (req, res): Promise<void> => {
+  app.delete(`${api}/blacklist/:id`, authMiddleware, requireOrganization, async (req, res): Promise<void> => {
     const id = parseInt(req.params.id, 10);
     if (Number.isNaN(id)) {
       res.status(400).json({ error: "Invalid ID" });
       return;
     }
-    await db.delete(blacklistTable).where(eq(blacklistTable.id, id));
+    const [deleted] = await db.delete(blacklistTable).where(and(
+      eq(blacklistTable.organizationId, organizationId(req)),
+      eq(blacklistTable.id, id),
+    )).returning({ id: blacklistTable.id });
+    if (!deleted) {
+      res.status(404).json({ error: "Blacklist entry not found" });
+      return;
+    }
     res.json({ success: true, message: "Removed from blacklist" });
   });
 
   /* ------------------------------- notifications ------------------------------- */
-  app.get(`${api}/notifications`, authMiddleware, async (req, res): Promise<void> => {
+  app.get(`${api}/notifications`, authMiddleware, requireOrganization, async (req, res): Promise<void> => {
     const user = (req as AuthedRequest).user;
     const notifications = await db
       .select()
       .from(notificationsTable)
-      .where(eq(notificationsTable.userId, user.userId))
+      .where(and(
+        eq(notificationsTable.organizationId, organizationId(req)),
+        eq(notificationsTable.userId, user.userId),
+      ))
       .orderBy(notificationsTable.createdAt);
     res.json(notifications.map(formatNotification).reverse());
   });
 
-  app.put(`${api}/notifications/:id/read`, authMiddleware, async (req, res): Promise<void> => {
+  app.put(`${api}/notifications/:id/read`, authMiddleware, requireOrganization, async (req, res): Promise<void> => {
     const id = parseInt(req.params.id, 10);
     if (Number.isNaN(id)) {
       res.status(400).json({ error: "Invalid notification ID" });
@@ -1229,14 +2059,349 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
     const [updated] = await db
       .update(notificationsTable)
       .set({ readStatus: true })
-      .where(eq(notificationsTable.id, id))
+      .where(and(
+        eq(notificationsTable.organizationId, organizationId(req)),
+        eq(notificationsTable.userId, (req as AuthedRequest).user.userId),
+        eq(notificationsTable.id, id),
+      ))
       .returning();
+    if (!updated) {
+      res.status(404).json({ error: "Notification not found" });
+      return;
+    }
     res.json(formatNotification(updated));
   });
 
-  app.put(`${api}/notifications/read-all`, authMiddleware, async (req, res): Promise<void> => {
+  app.put(`${api}/notifications/read-all`, authMiddleware, requireOrganization, async (req, res): Promise<void> => {
     const user = (req as AuthedRequest).user;
-    await db.update(notificationsTable).set({ readStatus: true }).where(eq(notificationsTable.userId, user.userId));
+    await db.update(notificationsTable).set({ readStatus: true }).where(and(
+      eq(notificationsTable.organizationId, organizationId(req)),
+      eq(notificationsTable.userId, user.userId),
+    ));
     res.json({ success: true, message: "All notifications marked as read" });
+  });
+
+  /* ------------------------------ subscriptions ------------------------------ */
+  app.get(`${api}/subscription`, authMiddleware, requireOrganization, async (req, res): Promise<void> => {
+    const org = (req as AuthedRequest).org!;
+    const settings = await getSystemSettings(org.id);
+    const monthCondition = sql`date_trunc('month', ${visitorsTable.createdAt} AT TIME ZONE ${settings.timezone}) =
+      date_trunc('month', now() AT TIME ZONE ${settings.timezone})`;
+    const [[visitorUsage], [staffUsage]] = await Promise.all([
+      db.select({ count: count() }).from(visitorsTable).where(and(
+        eq(visitorsTable.organizationId, org.id),
+        monthCondition,
+      )),
+      db.select({ count: count() }).from(usersTable)
+        .where(eq(usersTable.organizationId, org.id)),
+    ]);
+
+    res.json({
+      organization: { id: org.id, name: org.name },
+      subscription: {
+        planId: org.planId,
+        status: org.status,
+        billingCycle: org.billingCycle,
+        trialEndsAt: org.trialEndsAt?.toISOString() ?? null,
+        currentPeriodStart: org.currentPeriodStart.toISOString(),
+        currentPeriodEnd: org.currentPeriodEnd?.toISOString() ?? null,
+        readOnly: org.readOnly,
+      },
+      plan: PLANS[org.planId],
+      usage: {
+        visitorsThisMonth: visitorUsage.count,
+        staffUsers: staffUsage.count,
+      },
+    });
+  });
+
+  app.get(`${api}/subscription/invoices`, authMiddleware, requireOrganization, async (req, res): Promise<void> => {
+    const user = (req as AuthedRequest).user;
+    if (user.role !== "admin") {
+      res.status(403).json({ error: "Administrator access is required" });
+      return;
+    }
+    const invoices = await db.select().from(subscriptionInvoicesTable)
+      .where(eq(subscriptionInvoicesTable.organizationId, organizationId(req)))
+      .orderBy(desc(subscriptionInvoicesTable.issuedAt));
+    res.json(invoices.map((invoice) => ({
+      ...invoice,
+      issuedAt: invoice.issuedAt.toISOString(),
+      paidAt: invoice.paidAt?.toISOString() ?? null,
+    })));
+  });
+
+  app.post(`${api}/subscription/change-plan`, authMiddleware, requireOrganization, async (req, res): Promise<void> => {
+    const user = (req as AuthedRequest).user;
+    if (user.role !== "admin") {
+      res.status(403).json({ error: "Administrator access is required" });
+      return;
+    }
+    const parsed = z.object({
+      planId: z.enum(["starter", "business", "enterprise"]),
+      billingCycle: z.enum(["monthly", "annual"]),
+    }).safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: "Choose a valid plan and billing cycle" });
+      return;
+    }
+    const orgId = organizationId(req);
+    const [existingRequest] = await db.select({ id: subscriptionPlanRequestsTable.id })
+      .from(subscriptionPlanRequestsTable)
+      .where(and(
+        eq(subscriptionPlanRequestsTable.organizationId, orgId),
+        eq(subscriptionPlanRequestsTable.status, "pending"),
+      )).limit(1);
+    if (existingRequest) {
+      res.status(409).json({ error: "A plan change request is already awaiting review" });
+      return;
+    }
+    const [request] = await db.insert(subscriptionPlanRequestsTable).values({
+      organizationId: orgId,
+      requestedBy: user.userId,
+      requestedPlanId: parsed.data.planId,
+      billingCycle: parsed.data.billingCycle,
+    }).returning();
+    res.status(202).json({
+      requestId: request.id,
+      status: request.status,
+      message: "Your request has been sent to the VMS billing team for manual review.",
+    });
+  });
+
+  app.get(`${api}/superadmin/organizations`, authMiddleware, requireSuperAdmin, async (_req, res): Promise<void> => {
+    const organizations = await db.select({
+      id: organizationsTable.id,
+      name: organizationsTable.name,
+      slug: organizationsTable.slug,
+      contactEmail: organizationsTable.contactEmail,
+      contactMobile: organizationsTable.contactMobile,
+      createdAt: organizationsTable.createdAt,
+      planId: subscriptionsTable.planId,
+      subscriptionStatus: subscriptionsTable.status,
+      billingCycle: subscriptionsTable.billingCycle,
+      trialEndsAt: subscriptionsTable.trialEndsAt,
+      currentPeriodEnd: subscriptionsTable.currentPeriodEnd,
+    }).from(organizationsTable)
+      .leftJoin(subscriptionsTable, eq(subscriptionsTable.organizationId, organizationsTable.id))
+      .orderBy(desc(organizationsTable.createdAt));
+
+    const results = await Promise.all(organizations.map(async (organization) => {
+      const [[staff], [visitors]] = await Promise.all([
+        db.select({ count: count() }).from(usersTable)
+          .where(eq(usersTable.organizationId, organization.id)),
+        db.select({ count: count() }).from(visitorsTable)
+          .where(eq(visitorsTable.organizationId, organization.id)),
+      ]);
+      return {
+        ...organization,
+        createdAt: organization.createdAt.toISOString(),
+        trialEndsAt: organization.trialEndsAt?.toISOString() ?? null,
+        currentPeriodEnd: organization.currentPeriodEnd?.toISOString() ?? null,
+        staffUsers: staff.count,
+        totalVisitors: visitors.count,
+      };
+    }));
+    res.json(results);
+  });
+
+  app.get(`${api}/superadmin/organizations/:id`, authMiddleware, requireSuperAdmin, async (req, res): Promise<void> => {
+    const id = Number.parseInt(req.params.id, 10);
+    if (!Number.isInteger(id) || id <= 0) {
+      res.status(400).json({ error: "Invalid organization ID" });
+      return;
+    }
+    const [organization] = await db.select().from(organizationsTable)
+      .where(eq(organizationsTable.id, id));
+    if (!organization) {
+      res.status(404).json({ error: "Organization not found" });
+      return;
+    }
+    const [[subscription], users, invoices] = await Promise.all([
+      db.select().from(subscriptionsTable).where(eq(subscriptionsTable.organizationId, id)),
+      db.select({
+        id: usersTable.id,
+        name: usersTable.name,
+        email: usersTable.email,
+        role: usersTable.role,
+        createdAt: usersTable.createdAt,
+      }).from(usersTable).where(eq(usersTable.organizationId, id)),
+      db.select().from(subscriptionInvoicesTable)
+        .where(eq(subscriptionInvoicesTable.organizationId, id))
+        .orderBy(desc(subscriptionInvoicesTable.issuedAt)),
+    ]);
+    res.json({
+      organization: { ...organization, createdAt: organization.createdAt.toISOString() },
+      subscription: subscription ? {
+        ...subscription,
+        trialEndsAt: subscription.trialEndsAt?.toISOString() ?? null,
+        currentPeriodStart: subscription.currentPeriodStart.toISOString(),
+        currentPeriodEnd: subscription.currentPeriodEnd?.toISOString() ?? null,
+        canceledAt: subscription.canceledAt?.toISOString() ?? null,
+        createdAt: subscription.createdAt.toISOString(),
+        updatedAt: subscription.updatedAt.toISOString(),
+      } : null,
+      users: users.map((member) => ({ ...member, createdAt: member.createdAt.toISOString() })),
+      invoices: invoices.map((invoice) => ({
+        ...invoice,
+        issuedAt: invoice.issuedAt.toISOString(),
+        paidAt: invoice.paidAt?.toISOString() ?? null,
+      })),
+    });
+  });
+
+  app.get(`${api}/superadmin/plan-requests`, authMiddleware, requireSuperAdmin, async (_req, res): Promise<void> => {
+    const requests = await db.select({
+      id: subscriptionPlanRequestsTable.id,
+      organizationId: subscriptionPlanRequestsTable.organizationId,
+      organizationName: organizationsTable.name,
+      requestedBy: subscriptionPlanRequestsTable.requestedBy,
+      requesterName: usersTable.name,
+      requesterEmail: usersTable.email,
+      requestedPlanId: subscriptionPlanRequestsTable.requestedPlanId,
+      billingCycle: subscriptionPlanRequestsTable.billingCycle,
+      status: subscriptionPlanRequestsTable.status,
+      createdAt: subscriptionPlanRequestsTable.createdAt,
+    }).from(subscriptionPlanRequestsTable)
+      .innerJoin(organizationsTable, eq(organizationsTable.id, subscriptionPlanRequestsTable.organizationId))
+      .innerJoin(usersTable, eq(usersTable.id, subscriptionPlanRequestsTable.requestedBy))
+      .orderBy(desc(subscriptionPlanRequestsTable.createdAt));
+    res.json(requests.map((request) => ({
+      ...request,
+      createdAt: request.createdAt.toISOString(),
+    })));
+  });
+
+  app.patch(`${api}/superadmin/plan-requests/:id`, authMiddleware, requireSuperAdmin, async (req, res): Promise<void> => {
+    const id = Number.parseInt(req.params.id, 10);
+    const parsed = z.object({ action: z.enum(["approve", "decline"]) }).safeParse(req.body);
+    if (!Number.isInteger(id) || id <= 0 || !parsed.success) {
+      res.status(400).json({ error: "Invalid plan request review" });
+      return;
+    }
+    const reviewer = (req as AuthedRequest).user;
+    const result = await db.transaction(async (tx) => {
+      const [planRequest] = await tx.select().from(subscriptionPlanRequestsTable)
+        .where(and(
+          eq(subscriptionPlanRequestsTable.id, id),
+          eq(subscriptionPlanRequestsTable.status, "pending"),
+        ));
+      if (!planRequest || !isPlanId(planRequest.requestedPlanId)) return null;
+
+      const now = new Date();
+      const plan = PLANS[planRequest.requestedPlanId];
+      const cycleEnd = plan.id === "enterprise"
+        ? null
+        : new Date(now.getTime() + (planRequest.billingCycle === "annual" ? 365 : 30) * 24 * 60 * 60 * 1000);
+      if (parsed.data.action === "approve") {
+        await tx.update(subscriptionsTable).set({
+          planId: planRequest.requestedPlanId,
+          status: "active",
+          billingCycle: planRequest.billingCycle,
+          trialEndsAt: null,
+          currentPeriodStart: now,
+          currentPeriodEnd: cycleEnd,
+          canceledAt: null,
+          updatedAt: now,
+        }).where(eq(subscriptionsTable.organizationId, planRequest.organizationId));
+        if (!planHasFeature(planRequest.requestedPlanId, "mandatoryPhoto")) {
+          await tx.update(systemSettingsTable).set({ requirePhoto: false })
+            .where(eq(systemSettingsTable.organizationId, planRequest.organizationId));
+        }
+      }
+
+      const [updatedRequest] = await tx.update(subscriptionPlanRequestsTable).set({
+        status: parsed.data.action === "approve" ? "approved" : "declined",
+        reviewedAt: now,
+        reviewedBy: reviewer.userId,
+      }).where(eq(subscriptionPlanRequestsTable.id, id)).returning();
+      return updatedRequest;
+    });
+    if (!result) {
+      res.status(404).json({ error: "Pending plan request was not found" });
+      return;
+    }
+    res.json({ ...result, createdAt: result.createdAt.toISOString(), reviewedAt: result.reviewedAt?.toISOString() ?? null });
+  });
+
+  app.patch(`${api}/superadmin/organizations/:id/subscription`, authMiddleware, requireSuperAdmin, async (req, res): Promise<void> => {
+    const organization = Number.parseInt(req.params.id, 10);
+    const parsed = z.object({
+      planId: z.enum(["starter", "business", "enterprise"]),
+      status: z.enum(["trial", "active", "past_due", "canceled", "expired"]),
+      billingCycle: z.enum(["monthly", "annual"]),
+      trialDays: z.number().int().min(1).max(90).optional(),
+    }).safeParse(req.body);
+    if (!Number.isInteger(organization) || organization <= 0 || !parsed.success) {
+      res.status(400).json({ error: "Invalid subscription update" });
+      return;
+    }
+    const now = new Date();
+    const trialEndsAt = parsed.data.status === "trial"
+      ? new Date(now.getTime() + (parsed.data.trialDays ?? 14) * 24 * 60 * 60 * 1000)
+      : null;
+    const plan = PLANS[parsed.data.planId];
+    const currentPeriodEnd = parsed.data.status === "trial"
+      ? trialEndsAt
+      : parsed.data.status === "active" && plan.id !== "enterprise"
+        ? new Date(now.getTime() + (parsed.data.billingCycle === "annual" ? 365 : 30) * 24 * 60 * 60 * 1000)
+        : null;
+    const [updated] = await db.transaction(async (tx) => {
+      const [subscription] = await tx.update(subscriptionsTable).set({
+        planId: parsed.data.planId,
+        status: parsed.data.status,
+        billingCycle: parsed.data.billingCycle,
+        trialEndsAt,
+        currentPeriodStart: now,
+        currentPeriodEnd,
+        canceledAt: parsed.data.status === "canceled" ? now : null,
+        updatedAt: now,
+      }).where(eq(subscriptionsTable.organizationId, organization)).returning();
+      if (subscription && !planHasFeature(parsed.data.planId, "mandatoryPhoto")) {
+        await tx.update(systemSettingsTable).set({ requirePhoto: false })
+          .where(eq(systemSettingsTable.organizationId, organization));
+      }
+      return [subscription];
+    });
+    if (!updated) {
+      res.status(404).json({ error: "Organization subscription not found" });
+      return;
+    }
+    res.json({
+      ...updated,
+      trialEndsAt: updated.trialEndsAt?.toISOString() ?? null,
+      currentPeriodStart: updated.currentPeriodStart.toISOString(),
+      currentPeriodEnd: updated.currentPeriodEnd?.toISOString() ?? null,
+      canceledAt: updated.canceledAt?.toISOString() ?? null,
+      createdAt: updated.createdAt.toISOString(),
+      updatedAt: updated.updatedAt.toISOString(),
+    });
+  });
+
+  app.post(`${api}/superadmin/organizations/:id/invoices`, authMiddleware, requireSuperAdmin, async (req, res): Promise<void> => {
+    const organization = Number.parseInt(req.params.id, 10);
+    const parsed = z.object({
+      amountRupees: z.number().int().positive(),
+      description: z.string().trim().min(1).max(500),
+      status: z.enum(["pending", "paid"]),
+    }).safeParse(req.body);
+    if (!Number.isInteger(organization) || organization <= 0 || !parsed.success) {
+      res.status(400).json({ error: "Enter a valid invoice amount and description" });
+      return;
+    }
+    const [invoice] = await db.insert(subscriptionInvoicesTable).values({
+      organizationId: organization,
+      invoiceNumber: `VMS-${Date.now()}-${generateId().slice(0, 8).toUpperCase()}`,
+      amountPaise: parsed.data.amountRupees * 100,
+      currency: "INR",
+      description: parsed.data.description,
+      status: parsed.data.status,
+      paidAt: parsed.data.status === "paid" ? new Date() : null,
+    }).returning();
+    res.status(201).json({
+      ...invoice,
+      issuedAt: invoice.issuedAt.toISOString(),
+      paidAt: invoice.paidAt?.toISOString() ?? null,
+    });
   });
 }

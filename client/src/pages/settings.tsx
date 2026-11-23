@@ -5,7 +5,7 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import { useQueryClient } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Settings as SettingsIcon, Save, Upload, X, RotateCcw, RotateCw } from "lucide-react";
+import { Settings as SettingsIcon, Save, Upload, X, RotateCcw, RotateCw, LocateFixed } from "lucide-react";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
@@ -15,10 +15,12 @@ import { useToast } from "@/hooks/use-toast";
 import {
   getGetSystemSettingsQueryKey,
   useGetSystemSettings,
+  useGetSubscription,
   useUpdateSystemSettings,
   type SystemSettings,
 } from "@/lib/api-client";
 import { useLanguage } from "@/contexts/LanguageContext";
+import { Link } from "wouter";
 
 const settingsSchema = z.object({
   facilityName: z.string().trim().min(1, "Facility name is required"),
@@ -30,7 +32,10 @@ const settingsSchema = z.object({
   autoCheckoutEnabled: z.boolean(),
   autoCheckoutTime: z.string().regex(/^(?:[01]\d|2[0-3]):[0-5]\d$/, "Enter a valid time"),
   timezone: z.string().trim().min(1, "Timezone is required"),
+  requireApproval: z.boolean(),
   requirePhoto: z.boolean(),
+  receptionLatitude: z.number().min(-90).max(90).nullable(),
+  receptionLongitude: z.number().min(-180).max(180).nullable(),
 });
 
 type SettingsForm = z.infer<typeof settingsSchema>;
@@ -72,13 +77,20 @@ const defaultSettings: SettingsForm = {
   autoCheckoutEnabled: true,
   autoCheckoutTime: "23:59",
   timezone: "Asia/Kolkata",
+  requireApproval: false,
   requirePhoto: false,
+  receptionLatitude: null,
+  receptionLongitude: null,
 };
 
 export default function Settings() {
   const { t } = useLanguage();
   const queryClient = useQueryClient();
   const { toast } = useToast();
+  const { data: subscription } = useGetSubscription();
+  const isReadOnly = subscription?.subscription.readOnly ?? false;
+  const canRequirePhoto = subscription?.plan.liveFeatures.includes("mandatoryPhoto") ?? false;
+  const canRequireApproval = subscription?.plan.liveFeatures.includes("approvals") ?? false;
   const logoInputRef = useRef<HTMLInputElement>(null);
   const [activeTab, setActiveTab] = useState<"branding" | "system">("branding");
   const { data: settings, isLoading, isError } = useGetSystemSettings();
@@ -104,9 +116,12 @@ export default function Settings() {
       autoCheckoutEnabled: settings.autoCheckoutEnabled,
       autoCheckoutTime: settings.autoCheckoutTime,
       timezone: settings.timezone,
+      requireApproval: settings.requireApproval && canRequireApproval,
       requirePhoto: settings.requirePhoto,
+      receptionLatitude: settings.receptionLatitude,
+      receptionLongitude: settings.receptionLongitude,
     });
-  }, [settings, form]);
+  }, [settings, form, canRequireApproval]);
 
   const updateMutation = useUpdateSystemSettings({
     mutation: {
@@ -122,6 +137,33 @@ export default function Settings() {
 
   const onSubmit = (values: SettingsForm) => updateMutation.mutate(values);
   const companyLogo = form.watch("companyLogo");
+  const receptionLatitude = form.watch("receptionLatitude");
+  const receptionLongitude = form.watch("receptionLongitude");
+
+  const setReceptionLocation = () => {
+    if (!navigator.geolocation) {
+      toast({ title: t("Location unavailable"), description: t("This device does not support location access."), variant: "destructive" });
+      return;
+    }
+
+    navigator.geolocation.getCurrentPosition(
+      ({ coords }) => {
+        form.setValue("receptionLatitude", coords.latitude, { shouldDirty: true, shouldValidate: true });
+        form.setValue("receptionLongitude", coords.longitude, { shouldDirty: true, shouldValidate: true });
+        toast({
+          title: t("Reception location detected"),
+          description: `${t("GPS accuracy")}: ${Math.round(coords.accuracy)} m. ${t("Save Configuration to keep this reception point.")}`,
+        });
+      },
+      (error) => {
+        const description = error.code === error.PERMISSION_DENIED
+          ? t("Allow location access in the browser to set the reception point.")
+          : t("Could not determine this device's location. Try again near the reception system.");
+        toast({ title: t("Unable to set reception location"), description, variant: "destructive" });
+      },
+      { enableHighAccuracy: true, timeout: 15_000, maximumAge: 0 },
+    );
+  };
 
   useEffect(() => {
     if (logoSource) return () => URL.revokeObjectURL(logoSource);
@@ -327,22 +369,52 @@ export default function Settings() {
 
               <div className="flex items-center justify-between gap-4 border-t border-border pt-5">
                 <div className="space-y-0.5">
-                  <Label>{t("Require Host Approval")}</Label>
-                  <p className="text-sm text-muted-foreground">{t("Approval is disabled; visitors are checked in when registered.")}</p>
+                  <Label htmlFor="requireApproval">{t("Require Admin Approval")}</Label>
+                  <p className="text-sm text-muted-foreground">
+                    {!canRequireApproval
+                      ? t("Admin approval is not included in the Starter plan.")
+                      : t(form.watch("requireApproval")
+                        ? "New visitors stay pending until an administrator approves them."
+                        : "New visitors are checked in immediately without approval.")}
+                  </p>
                 </div>
-                <Switch checked={false} disabled aria-label={t("Host approval is disabled")} />
+                <Controller
+                  control={form.control}
+                  name="requireApproval"
+                  render={({ field }) => (
+                    <Switch id="requireApproval" checked={field.value} onCheckedChange={field.onChange} disabled={isReadOnly || !canRequireApproval} />
+                  )}
+                />
+              </div>
+
+              <div className="flex flex-col gap-3 border-t border-border pt-5 sm:flex-row sm:items-center sm:justify-between">
+                <div className="space-y-0.5">
+                  <Label>{t("Reception geofence center")}</Label>
+                  <p className="text-sm text-muted-foreground">{t("Set the 500 m visitor tracking boundary from this reception device's location.")}</p>
+                  <p className="text-xs text-muted-foreground">
+                    {receptionLatitude !== null && receptionLongitude !== null
+                      ? `${receptionLatitude.toFixed(6)}, ${receptionLongitude.toFixed(6)}`
+                      : t("Reception location is not set.")}
+                  </p>
+                </div>
+                <Button type="button" variant="outline" onClick={setReceptionLocation} disabled={isReadOnly}>
+                  <LocateFixed className="mr-2 h-4 w-4" /> {t("Use this device as reception")}
+                </Button>
               </div>
 
               <div className="flex items-center justify-between gap-4 border-t border-border pt-5">
                 <div className="space-y-0.5">
                   <Label htmlFor="requirePhoto">{t("Photo Capture Enforced")}</Label>
                   <p className="text-sm text-muted-foreground">{t("Require a photo before visitor check-in can be completed.")}</p>
+                  {!canRequirePhoto && (
+                    <Link href="/billing" className="text-xs font-medium text-primary underline">{t("Available on Business and Enterprise")}</Link>
+                  )}
                 </div>
                 <Controller
                   control={form.control}
                   name="requirePhoto"
                   render={({ field }) => (
-                    <Switch id="requirePhoto" checked={field.value} onCheckedChange={field.onChange} />
+                    <Switch id="requirePhoto" checked={field.value} onCheckedChange={field.onChange} disabled={!canRequirePhoto || isReadOnly} />
                   )}
                 />
               </div>
@@ -352,7 +424,7 @@ export default function Settings() {
           )}
 
           <div className="flex justify-end">
-            <Button type="submit" disabled={updateMutation.isPending || !settings}>
+            <Button type="submit" disabled={updateMutation.isPending || !settings || isReadOnly}>
               <Save className="mr-2 h-4 w-4" />
               {updateMutation.isPending ? t("Saving...") : t("Save Configuration")}
             </Button>

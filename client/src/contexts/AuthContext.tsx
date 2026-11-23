@@ -16,7 +16,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [token, setToken] = useState<string | null>(() => getToken());
   const [user, setUser] = useState<User | null>(null);
   const [location, setLocation] = useLocation();
-  const isPublicVisitorPass = /^\/visitor\/[^/]+\/?$/.test(location);
+  const isPublicVisitorPass = /^\/visitor\/[^/]+\/?$/.test(location) ||
+    /^\/appointment\/register\/[^/]+\/?$/.test(location) ||
+    /^\/appointment-pass\/[^/]+\/?$/.test(location);
 
   const { data: me, isLoading: isLoadingMe, error } = useGetMe({
     query: {

@@ -1,4 +1,4 @@
-import { Switch, Route, Router as WouterRouter } from "wouter";
+import { Switch, Route, Router as WouterRouter, Redirect } from "wouter";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -20,10 +20,17 @@ import Blacklist from "@/pages/blacklist";
 import Users from "@/pages/users";
 import Notifications from "@/pages/notifications";
 import Settings from "@/pages/settings";
+import Billing from "@/pages/billing";
+import SuperAdmin from "@/pages/superadmin";
+import Appointments from "@/pages/appointments";
+import AppointmentRegistration from "@/pages/appointment-registration";
+import AppointmentPassPage from "@/pages/appointment-pass";
+import Reconciliation from "@/pages/reconciliation";
 
 function HomeRoute() {
   const { user, isLoading } = useAuth();
   if (isLoading) return null;
+  if (user?.role === "superadmin") return <Redirect to="/superadmin" />;
   return user ? <AppLayout><Dashboard /></AppLayout> : <Landing />;
 }
 
@@ -49,6 +56,14 @@ function AppRoutes() {
         <AppLayout><Visitors /></AppLayout>
       </Route>
       <Route path="/visitor/:id" component={VisitorPass} />
+      <Route path="/appointment/register/:token" component={AppointmentRegistration} />
+      <Route path="/appointment-pass/:token" component={AppointmentPassPage} />
+      <Route path="/appointments">
+        <AppLayout><Appointments /></AppLayout>
+      </Route>
+      <Route path="/reconciliation">
+        <AppLayout><Reconciliation /></AppLayout>
+      </Route>
       <Route path="/visitor-record/:id">
         <AppLayout><VisitorDetail /></AppLayout>
       </Route>
@@ -66,6 +81,12 @@ function AppRoutes() {
       </Route>
       <Route path="/settings">
         <AppLayout><Settings /></AppLayout>
+      </Route>
+      <Route path="/billing">
+        <AppLayout><Billing /></AppLayout>
+      </Route>
+      <Route path="/superadmin">
+        <AppLayout><SuperAdmin /></AppLayout>
       </Route>
 
       <Route component={NotFound} />

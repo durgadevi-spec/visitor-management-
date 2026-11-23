@@ -34,6 +34,7 @@ export default function Visitors() {
       case "checked_out": return "bg-green-500/20 text-green-400 border-green-500/30";
       case "pending": return "bg-yellow-500/20 text-yellow-400 border-yellow-500/30";
       case "rejected": return "bg-red-500/20 text-red-400 border-red-500/30";
+      case "cancelled": return "bg-red-500/20 text-red-400 border-red-500/30";
       case "approved": return "bg-purple-500/20 text-purple-400 border-purple-500/30";
       case "scheduled": return "bg-amber-500/20 text-amber-500 border-amber-500/30";
       default: return "bg-gray-500/20 text-gray-400 border-gray-500/30";
@@ -84,6 +85,7 @@ export default function Visitors() {
                 <SelectItem value="checked_out">{t("Checked Out")}</SelectItem>
                 <SelectItem value="rejected">{t("Rejected")}</SelectItem>
                 <SelectItem value="scheduled">{t("Scheduled")}</SelectItem>
+                <SelectItem value="cancelled">{t("Cancelled")}</SelectItem>
               </SelectContent>
             </Select>
           </div>

@@ -11,10 +11,14 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { useQueryClient } from "@tanstack/react-query";
 import { cn } from "@/lib/utils";
 import { useLanguage } from "@/contexts/LanguageContext";
+import { useGetSubscription } from "@/lib/api-client";
+import { Link } from "wouter";
 
 export default function Notifications() {
   const { t, formatDate } = useLanguage();
   const queryClient = useQueryClient();
+  const { data: subscription } = useGetSubscription();
+  const isReadOnly = subscription?.subscription.readOnly ?? false;
 
   const { data: notifications, isLoading } = useGetNotifications({
     query: {
@@ -69,7 +73,7 @@ export default function Notifications() {
           <p className="text-sm text-muted-foreground">{t("System notifications and action items.")}</p>
         </div>
         {unreadCount > 0 && (
-          <Button variant="outline" size="sm" onClick={handleMarkAll} disabled={markAllReadMutation.isPending}>
+          <Button variant="outline" size="sm" onClick={handleMarkAll} disabled={markAllReadMutation.isPending || isReadOnly}>
             <Check className="mr-2 h-4 w-4" /> {t("Mark All Read")}
           </Button>
         )}
@@ -107,15 +111,28 @@ export default function Notifications() {
                   </div>
                 </div>
                 <div className="flex-1">
-                  <p className={cn("text-sm", !notification.readStatus ? "font-medium text-foreground" : "text-muted-foreground")}>
-                    {t(notification.message)}
-                  </p>
-                  <p className="text-xs text-muted-foreground/70 mt-1 font-mono">
-                    {formatDate(new Date(notification.createdAt), "MMM d, HH:mm:ss")}
-                  </p>
+                  {notification.visitorId ? (
+                    <Link href={`/visitor-record/${notification.visitorId}`} className="block rounded-sm outline-none focus-visible:ring-2 focus-visible:ring-ring">
+                      <p className={cn("text-sm", !notification.readStatus ? "font-medium text-foreground" : "text-muted-foreground")}>
+                        {t(notification.message)}
+                      </p>
+                      <p className="mt-1 text-xs text-muted-foreground/70 font-mono">
+                        {formatDate(new Date(notification.createdAt), "MMM d, HH:mm:ss")}
+                      </p>
+                    </Link>
+                  ) : (
+                    <>
+                      <p className={cn("text-sm", !notification.readStatus ? "font-medium text-foreground" : "text-muted-foreground")}>
+                        {t(notification.message)}
+                      </p>
+                      <p className="text-xs text-muted-foreground/70 mt-1 font-mono">
+                        {formatDate(new Date(notification.createdAt), "MMM d, HH:mm:ss")}
+                      </p>
+                    </>
+                  )}
                 </div>
                 {!notification.readStatus && (
-                  <Button variant="ghost" size="icon" onClick={() => handleMarkRead(notification.id)} className="shrink-0 text-muted-foreground hover:text-foreground">
+                  <Button variant="ghost" size="icon" onClick={() => handleMarkRead(notification.id)} disabled={isReadOnly} className="shrink-0 text-muted-foreground hover:text-foreground">
                     <Check className="h-4 w-4" />
                   </Button>
                 )}

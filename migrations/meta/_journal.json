@@ -1,0 +1,41 @@
+{
+  "version": "7",
+  "dialect": "postgresql",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "7",
+      "when": 1794655018473,
+      "tag": "0000_add_multitenancy_subscriptions",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1794808045000,
+      "tag": "0001_add_require_approval_setting",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1794820000000,
+      "tag": "0002_add_visitor_location_tracking",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1794830000000,
+      "tag": "0003_add_visitor_id_card_checkout_verification",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1794840000000,
+      "tag": "0004_appointments_and_sms",
+      "breakpoints": true
+    }
+  ]
+}
