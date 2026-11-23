@@ -25,8 +25,8 @@ const checkInSchema = z.object({
   idCardNumber: z.string().trim().max(100, "ID card number must be 100 characters or fewer").optional(),
   purpose: z.string().min(2, "Purpose required"),
   personToMeet: z.string().min(2, "Host name required"),
-  idProofType: z.enum(["aadhar", "pan", "passport", "driving_license", "voter_id"]),
-  idNumber: z.string().min(4, "ID Number required"),
+  idProofType: z.enum(["aadhar", "pan", "passport", "driving_license", "voter_id"]).optional(),
+  idNumber: z.string().trim().max(100, "ID number must be 100 characters or fewer").optional(),
   photoUrl: z.string().optional(),
 });
 
@@ -67,7 +67,7 @@ export default function CheckIn() {
       idCardNumber: "",
       purpose: "",
       personToMeet: "",
-      idProofType: "aadhar",
+      idProofType: undefined,
       idNumber: "",
       photoUrl: "",
     }
@@ -325,11 +325,6 @@ export default function CheckIn() {
   };
 
   const onSubmit = (data: CheckInForm) => {
-    if (!preRegister && !data.idCardNumber?.trim()) {
-      form.setError("idCardNumber", { type: "manual", message: t("ID card number is required") });
-      return;
-    }
-
     if (isReadOnly || visitorLimitReached) {
       toast({
         title: t(isReadOnly ? "Subscription is read-only" : "Monthly visitor limit reached"),
@@ -513,9 +508,9 @@ export default function CheckIn() {
                 <FormField control={form.control} name="idCardNumber" render={({ field }) => (
                   <FormItem className="w-full max-w-[280px] space-y-1">
                     <FormLabel className="text-[13px] leading-4">
-                      {t("ID Card Number")}{!preRegister && <span className="ml-1 text-destructive">*</span>}
+                      {t("ID Card Number (Optional)")}
                     </FormLabel>
-                    <FormControl><Input {...field} aria-required={!preRegister} className="h-9 bg-background text-sm border-border" placeholder={t("Enter issued ID card number")} /></FormControl>
+                    <FormControl><Input {...field} className="h-9 bg-background text-sm border-border" placeholder={t("Enter issued ID card number")} /></FormControl>
                     <FormMessage />
                   </FormItem>
                 )} />
@@ -559,7 +554,7 @@ export default function CheckIn() {
               <CardContent className="grid grid-cols-1 gap-x-3 gap-y-2 p-4 pt-0 sm:grid-cols-2">
                 <FormField control={form.control} name="idProofType" render={({ field }) => (
                   <FormItem className="w-full max-w-[280px] space-y-1">
-                    <FormLabel className="text-[13px] leading-4">{t("ID Type")}</FormLabel>
+                    <FormLabel className="text-[13px] leading-4">{t("ID Type (Optional)")}</FormLabel>
                     <Select onValueChange={field.onChange} value={field.value}>
                       <FormControl>
                         <SelectTrigger className="h-9 bg-background text-sm border-border">
@@ -579,7 +574,7 @@ export default function CheckIn() {
                 )} />
                 <FormField control={form.control} name="idNumber" render={({ field }) => (
                   <FormItem className="w-full max-w-[280px] space-y-1">
-                    <FormLabel className="text-[13px] leading-4">{t("ID Number")}</FormLabel>
+                    <FormLabel className="text-[13px] leading-4">{t("ID Number (Optional)")}</FormLabel>
                     <FormControl><Input {...field} className="h-9 bg-background text-sm border-border uppercase font-mono" placeholder="XXXX-XXXX" /></FormControl>
                     <FormMessage />
                   </FormItem>

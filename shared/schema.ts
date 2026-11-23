@@ -402,8 +402,8 @@ export const CreateVisitorBody = z.object({
   purpose: z.string(),
   personToMeet: z.string(),
   personToMeetId: z.number().nullish(),
-  idProofType: z.enum(["aadhar", "pan", "passport", "driving_license", "voter_id"]),
-  idNumber: z.string(),
+  idProofType: z.enum(["aadhar", "pan", "passport", "driving_license", "voter_id"]).optional(),
+  idNumber: z.string().trim().max(100).optional(),
   idCardNumber: z.string().trim().max(100).optional().transform((value) => value || undefined),
   photoUrl: z.string().nullish(),
   scheduledFor: z.string()
@@ -452,7 +452,7 @@ export const ApproveVisitorBody = z.object({
 });
 
 export const CheckinVisitorBody = z.object({
-  idCardNumber: z.string().trim().min(1).max(100).optional(),
+  idCardNumber: z.string().trim().max(100).optional().transform((value) => value || undefined),
 });
 
 export const ManualCheckoutBody = z.object({

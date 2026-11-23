@@ -673,10 +673,6 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
     const user = (req as AuthedRequest).user;
     const orgId = organizationId(req);
     const isScheduled = !!data.scheduledFor;
-    if (!isScheduled && !data.idCardNumber?.trim()) {
-      res.status(400).json({ error: "An ID card number is required for visitor check-in" });
-      return;
-    }
     if (isScheduled && user.role !== "admin") {
       res.status(403).json({ error: "Only administrators can schedule future visits" });
       return;
@@ -734,8 +730,8 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
           purpose: data.purpose,
           personToMeet: data.personToMeet,
           personToMeetId: data.personToMeetId ?? null,
-          idProofType: data.idProofType,
-          idNumber: data.idNumber,
+          idProofType: data.idProofType ?? "aadhar",
+          idNumber: data.idNumber?.trim() ?? "",
           idCardNumber: data.idCardNumber?.trim() ?? null,
           photoUrl: data.photoUrl ?? null,
           qrCode: visitorId,
@@ -1349,10 +1345,6 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
       return;
     }
     const idCardNumber = existing.idCardNumber?.trim() || parsed.data.idCardNumber?.trim() || null;
-    if (!idCardNumber) {
-      res.status(400).json({ error: "An ID card number is required before check-in" });
-      return;
-    }
     if (!["scheduled", "pending", "approved"].includes(existing.status)) {
       res.status(409).json({ error: "Visitor cannot be checked in from the current status" });
       return;
@@ -1387,7 +1379,7 @@ export async function registerRoutes(_httpServer: Server, app: Express) {
         action: "checked_in",
         actorUserId: user.userId,
         actorEmail: user.email,
-        details: `Visitor checked in. ID card number: ${idCardNumber}.`,
+        details: `Visitor checked in. ID card number: ${idCardNumber ?? "Not recorded"}.`,
       });
       if (checkedIn.appointmentId) {
         const [appointment] = await tx.update(appointmentsTable).set({

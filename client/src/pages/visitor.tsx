@@ -290,12 +290,7 @@ export default function VisitorDetail() {
 
   const handleCheckin = () => {
     if (!visitor) return;
-    if (visitor.idCardNumber) {
-      checkinMutation.mutate({ id: id! });
-      return;
-    }
-    setCheckInCardNumber("");
-    setCheckInCardDialogOpen(true);
+    checkinMutation.mutate({ id: id!, data: visitor.idCardNumber ? { idCardNumber: visitor.idCardNumber } : {} });
   };
   const handleCheckinWithCard = () => {
     const idCardNumber = checkInCardNumber.trim();

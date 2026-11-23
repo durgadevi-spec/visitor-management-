@@ -682,8 +682,8 @@ export interface CreateVisitorInput {
   purpose: string;
   personToMeet: string;
   personToMeetId?: number | null;
-  idProofType: IdProofType;
-  idNumber: string;
+  idProofType?: IdProofType;
+  idNumber?: string;
   idCardNumber?: string;
   photoUrl?: string | null;
   scheduledFor?: string;
